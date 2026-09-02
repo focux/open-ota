@@ -1,0 +1,11 @@
+node_modules/
+dist/
+.output/
+.wrangler/
+.alchemy/
+.env
+.env.*
+!.env.example
+*.log
+.DS_Store
+.keys/

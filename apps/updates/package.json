@@ -1,0 +1,24 @@
+{
+  "name": "@expo-ota/updates",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./worker": "./src/worker.ts"
+  },
+  "scripts": {
+    "check": "tsc -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@effect/sql-d1": "4.0.0-rc.112",
+    "alchemy": "2.0.0-beta.76",
+    "effect": "4.0.0-rc.112"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20260812.1",
+    "@effect/sql-sqlite-node": "4.0.0-rc.112",
+    "typescript": "5.9.3",
+    "vitest": "^4.1.11"
+  }
+}

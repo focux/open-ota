@@ -1,0 +1,12 @@
+[submodule ".refs/effect-smol"]
+	path = .refs/effect-smol
+	url = https://github.com/Effect-TS/effect-smol.git
+[submodule ".refs/alchemy"]
+	path = .refs/alchemy
+	url = https://github.com/alchemy-run/alchemy.git
+[submodule ".refs/executor"]
+	path = .refs/executor
+	url = https://github.com/UsefulSoftwareCo/executor.git
+[submodule ".refs/distilled"]
+	path = .refs/distilled
+	url = https://github.com/alchemy-run/distilled.git
