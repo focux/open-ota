@@ -7,3 +7,10 @@ allowBuilds:
   lightningcss: true
   unrs-resolver: true
   workerd: true
+
+catalog:
+  alchemy: 2.0.0-beta.76
+  effect: 4.0.0-rc.112
+  "@effect/platform-node": 4.0.0-rc.112
+  "@effect/sql-d1": 4.0.0-rc.112
+  "@effect/sql-sqlite-node": 4.0.0-rc.112

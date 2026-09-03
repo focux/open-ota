@@ -17,9 +17,9 @@
     "cloud:login": "alchemy login --configure alchemy.run.ts"
   },
   "devDependencies": {
-    "@effect/platform-node": "4.0.0-rc.112",
-    "alchemy": "2.0.0-beta.76",
-    "effect": "4.0.0-rc.112"
+    "@effect/platform-node": "catalog:",
+    "alchemy": "catalog:",
+    "effect": "catalog:"
   },
   "engines": {
     "node": ">=24.0.0"
