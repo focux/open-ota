@@ -2,7 +2,6 @@ import { createFileRoute } from "@tanstack/react-router"
 import { useQueries, useQuery } from "@tanstack/react-query"
 
 import type { Group } from "@/lib/api"
-import { plural } from "@/lib/format"
 import {
   activeDevices,
   driftedRuntimes,
@@ -18,12 +17,7 @@ import {
 import { AddChannelDialog } from "@/components/add-channel-dialog"
 import { ChannelCard } from "@/components/channel-card"
 import { CountriesCard } from "@/components/countries-card"
-import {
-  ErrorState,
-  StaleStrip,
-  Warnings,
-  isUnreachable,
-} from "@/components/feedback"
+import { ErrorState, StaleStrip, isUnreachable } from "@/components/feedback"
 import { StatCard } from "@/components/metrics"
 import { PageHeader } from "@/components/page-header"
 import { CardSkeleton, StatSkeleton } from "@/components/page-state"
@@ -80,36 +74,17 @@ function OverviewPage() {
   )
   const known = metrics.data !== undefined
   const stale = overview.isError && overview.data !== undefined
-  // One line per channel that has devices on a runtime its branch never
-  // published for. Scoped per channel: a staging device is not stranded by
-  // what production serves.
-  const drift = (overview.data?.channels ?? []).flatMap((channel) => {
-    const stranded = driftedRuntimes(
-      metrics.data,
-      [channel.name],
-      latest.filter((update) => update.branch === channel.branch)
-    )
-    return stranded.length === 0
-      ? []
-      : [
-          `${channel.name}: ${stranded
-            .map(
-              (runtime) =>
-                `${plural(runtime.devices, `${runtime.platform} device`)} on ${runtime.runtimeVersion.slice(0, 8)}`
-            )
-            .join(", ")}`,
-        ]
-  })
-  const strandedRuntimes = (overview.data?.channels ?? []).reduce(
-    (total, channel) =>
-      total +
+  // Builds with devices that their channel's branch has nothing for. They are
+  // rows on the channel cards; up here they are only a count.
+  const unserved = new Set(
+    (overview.data?.channels ?? []).flatMap((channel) =>
       driftedRuntimes(
         metrics.data,
         [channel.name],
         latest.filter((update) => update.branch === channel.branch)
-      ).length,
-    0
-  )
+      ).map((runtime) => `${runtime.platform} ${runtime.runtimeVersion}`)
+    )
+  ).size
 
   return (
     <>
@@ -132,11 +107,6 @@ function OverviewPage() {
           onRetry={() => void overview.refetch()}
         />
       )}
-
-      <Warnings
-        title={`${plural(strandedRuntimes, "runtime version")} ${strandedRuntimes === 1 ? "has" : "have"} devices but nothing published for them`}
-        items={drift}
-      />
 
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         {overview.isPending || metrics.isPending ? (
@@ -170,7 +140,8 @@ function OverviewPage() {
               index={3}
               label="Runtime versions"
               value={known ? String(runtimeVersionCount(metrics.data)) : null}
-              hint="Platform and runtime pairs devices report from the field."
+              suffix={unserved === 0 ? "" : `${unserved} without an update`}
+              hint="Platform and runtime pairs devices report from the field. A build without an update keeps the bundle it shipped with."
             />
           </>
         )}

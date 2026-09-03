@@ -3,6 +3,7 @@ import { Alert02Icon, InformationCircleIcon } from "@hugeicons/core-free-icons"
 
 import { DashboardApiError } from "@/lib/api"
 import { relativeTime } from "@/lib/format"
+import { cn } from "@/lib/utils"
 import {
   Alert,
   AlertAction,
@@ -91,25 +92,48 @@ export function DialogError({ error }: { readonly error: unknown }) {
   )
 }
 
-/** Everything wrong with the state of the world on this page, in one place. */
-export function Warnings({
+/**
+ * Something inside a card that needs a hand, said in the card's own voice: a
+ * tinted band between the header and the table, never a box inside the box.
+ */
+export function CardNotice({
   title,
-  items,
+  description,
+  action,
+  variant = "default",
 }: {
   readonly title: string
-  readonly items: ReadonlyArray<string>
+  readonly description?: string
+  readonly action?: React.ReactNode
+  readonly variant?: "default" | "destructive"
 }) {
-  if (items.length === 0) return null
-  const shown = items.slice(0, 3)
   return (
-    <Alert className={enters}>
-      <HugeiconsIcon icon={Alert02Icon} strokeWidth={2} />
-      <AlertTitle>{title}</AlertTitle>
-      <AlertDescription className="text-pretty">
-        {shown.join(", ")}
-        {items.length > shown.length &&
-          `, and ${items.length - shown.length} more`}
-      </AlertDescription>
-    </Alert>
+    <div
+      role={variant === "destructive" ? "alert" : "status"}
+      className={cn(
+        "flex flex-wrap items-center gap-x-4 gap-y-2 border-b px-(--card-spacing) py-2.5 text-sm",
+        enters,
+        variant === "destructive"
+          ? "bg-destructive/5 text-destructive"
+          : "bg-muted/40 text-foreground"
+      )}
+    >
+      <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+        <span className="font-medium">{title}</span>
+        {description ? (
+          <span
+            className={cn(
+              "text-pretty",
+              variant === "destructive"
+                ? "text-destructive/80"
+                : "text-muted-foreground"
+            )}
+          >
+            {description}
+          </span>
+        ) : null}
+      </div>
+      {action ? <div className="shrink-0">{action}</div> : null}
+    </div>
   )
 }

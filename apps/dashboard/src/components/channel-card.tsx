@@ -5,19 +5,13 @@ import { HugeiconsIcon } from "@hugeicons/react"
 import { MoreHorizontalIcon } from "@hugeicons/core-free-icons"
 
 import { api } from "@/lib/api"
-import type { Channel, Metrics, Update } from "@/lib/api"
+import type { Channel, Metrics, RuntimeDevices, Update } from "@/lib/api"
 import { absoluteTime, plural, relativeTime, shortId } from "@/lib/format"
 import { adoption, driftedRuntimes } from "@/lib/metrics"
-import { DialogError, Warnings } from "@/components/feedback"
+import { CardNotice, DialogError } from "@/components/feedback"
 import { RollbackDialog } from "@/components/rollback-dialog"
 import { HealthBadge } from "@/components/health-badge"
 import { AdoptionCell, PlatformChip } from "@/components/metrics"
-import {
-  Alert,
-  AlertAction,
-  AlertDescription,
-  AlertTitle,
-} from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
 import {
   Card,
@@ -111,7 +105,11 @@ export function ChannelCard({
         a.platform.localeCompare(b.platform)
     )
 
-  const stranded = driftedRuntimes(metrics, [channel.name], serving)
+  // Builds with devices on this channel that the branch has nothing for.
+  // They sit in the table with the rest: a fresh build looks like this until
+  // its first publish, and an old build looks like this forever.
+  const unserved = driftedRuntimes(metrics, [channel.name], serving)
+  const rows = buildRows(serving, unserved)
   const faulty = serving.reduce(
     (total, update) => total + adoption(metrics, update).faulty,
     0
@@ -165,51 +163,31 @@ export function ChannelCard({
         </CardAction>
       </CardHeader>
 
-      {stranded.length > 0 && (
-        <div className="px-(--card-spacing)">
-          <Warnings
-            title={`${plural(stranded.length, "runtime version")} on ${channel.name} ${stranded.length === 1 ? "has" : "have"} no update${channel.name === channel.branch ? "" : ` on ${channel.branch}`}`}
-            items={stranded.map(
-              (runtime) =>
-                `${plural(runtime.devices, `${runtime.platform} device`)} on ${runtime.runtimeVersion.slice(0, 8)}`
-            )}
-          />
-        </div>
-      )}
-
       {faulty > 0 && (
-        <div className="px-(--card-spacing)">
-          <Alert variant="destructive">
-            <AlertTitle>
-              {plural(faulty, "device")} crashed on what {channel.name} is
-              serving
-            </AlertTitle>
-            <AlertDescription className="text-pretty">
-              They rolled back to the update they were on. Rolling back stops
-              the rest of the fleet from taking it.
-            </AlertDescription>
-            <AlertAction>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setRollbackOpen(true)}
-              >
-                Roll back
-              </Button>
-            </AlertAction>
-          </Alert>
-        </div>
+        <CardNotice
+          variant="destructive"
+          title={`${plural(faulty, "device")} crashed on what ${channel.name} is serving`}
+          description="They rolled back to the update they were on. Rolling back stops the rest of the fleet from taking it."
+          action={
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setRollbackOpen(true)}
+            >
+              Roll back
+            </Button>
+          }
+        />
       )}
 
       <CardContent className="p-0">
-        {serving.length === 0 ? (
+        {rows.length === 0 ? (
           <div className="px-(--card-spacing) pb-(--card-spacing)">
             <Empty>
               <EmptyHeader>
                 <EmptyTitle>Nothing published on {channel.branch}</EmptyTitle>
                 <EmptyDescription className="text-pretty">
-                  Devices on this channel keep running the bundle in their
-                  build.
+                  No build has checked in on this channel yet either.
                 </EmptyDescription>
               </EmptyHeader>
             </Empty>
@@ -236,68 +214,52 @@ export function ChannelCard({
               </TableRow>
             </TableHeader>
             <TableBody className="[&_tr:last-child]:border-0">
-              {serving.map((update) => {
-                const numbers = adoption(metrics, update)
-                const message = messages.get(update.groupId)
-                return (
-                  <TableRow key={update.id} className="h-14">
+              {rows.map((row) =>
+                row.kind === "unserved" ? (
+                  <TableRow
+                    key={`${row.runtime.platform} ${row.runtime.runtimeVersion}`}
+                    className="h-14"
+                  >
                     <TableCell className="pl-(--card-spacing)">
                       <div className="flex flex-col gap-1">
                         <PlatformChip
-                          platform={update.platform}
-                          runtimeVersion={update.runtimeVersion}
+                          platform={row.runtime.platform}
+                          runtimeVersion={row.runtime.runtimeVersion}
                         />
                         <span className="text-xs text-muted-foreground tabular-nums">
-                          {numbers.devices === 0
-                            ? "no devices yet"
-                            : plural(numbers.devices, "device")}
+                          {plural(row.runtime.devices, "device")}
                         </span>
                       </div>
                     </TableCell>
                     <TableCell>
-                      <Link
-                        to="/groups/$id"
-                        params={{ id: update.groupId }}
-                        className="flex max-w-80 flex-col gap-0.5 rounded-sm outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
-                      >
-                        <span className="truncate font-medium underline-offset-4 hover:underline">
-                          {update.kind === "rollback"
-                            ? "Rolled back to embedded"
-                            : (message ?? "Untitled update")}
+                      <div className="flex max-w-80 flex-col gap-0.5">
+                        <span className="font-medium text-muted-foreground">
+                          Nothing published for this build
                         </span>
-                        <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                          <span className="font-mono">
-                            {shortId(update.id)}
-                          </span>
-                          <span aria-hidden="true">&middot;</span>
-                          <span>{relativeTime(update.createdAt)}</span>
+                        <span className="text-xs text-muted-foreground">
+                          Running the bundle it shipped with
                         </span>
-                      </Link>
+                      </div>
                     </TableCell>
-                    <TableCell className="text-right">
-                      <AdoptionCell adoption={numbers} />
+                    <TableCell className="text-right text-xs text-muted-foreground">
+                      none
                     </TableCell>
                     <TableCell>
-                      <HealthBadge
-                        healthy={numbers.running}
-                        faulty={numbers.faulty}
-                      />
+                      <HealthBadge healthy={0} faulty={0} />
                     </TableCell>
-                    <TableCell className="pr-(--card-spacing) text-right text-muted-foreground">
-                      <Tooltip>
-                        <TooltipTrigger
-                          render={<span className="cursor-default" />}
-                        >
-                          {relativeTime(update.createdAt)}
-                        </TooltipTrigger>
-                        <TooltipContent>
-                          {absoluteTime(update.createdAt)}
-                        </TooltipContent>
-                      </Tooltip>
+                    <TableCell className="pr-(--card-spacing) text-right text-xs text-muted-foreground">
+                      never
                     </TableCell>
                   </TableRow>
+                ) : (
+                  <ServingRow
+                    key={row.update.id}
+                    update={row.update}
+                    metrics={metrics}
+                    messages={messages}
+                  />
                 )
-              })}
+              )}
             </TableBody>
           </Table>
         )}
@@ -353,5 +315,92 @@ export function ChannelCard({
         </DialogContent>
       </Dialog>
     </Card>
+  )
+}
+
+type BuildRow =
+  | { readonly kind: "serving"; readonly update: Update }
+  | { readonly kind: "unserved"; readonly runtime: RuntimeDevices }
+
+/** One row per build, published or not, ordered by runtime version then platform. */
+function buildRows(
+  serving: ReadonlyArray<Update>,
+  unserved: ReadonlyArray<RuntimeDevices>
+): ReadonlyArray<BuildRow> {
+  const rows: Array<BuildRow> = [
+    ...serving.map((update) => ({ kind: "serving" as const, update })),
+    ...unserved.map((runtime) => ({ kind: "unserved" as const, runtime })),
+  ]
+  const key = (row: BuildRow) =>
+    row.kind === "serving"
+      ? [row.update.runtimeVersion, row.update.platform]
+      : [row.runtime.runtimeVersion, row.runtime.platform]
+  return rows.sort((a, b) => {
+    const [ra, pa] = key(a)
+    const [rb, pb] = key(b)
+    return ra.localeCompare(rb) || pa.localeCompare(pb)
+  })
+}
+
+function ServingRow({
+  update,
+  metrics,
+  messages,
+}: {
+  readonly update: Update
+  readonly metrics: Metrics | undefined
+  readonly messages: ReadonlyMap<string, string | null>
+}) {
+  const numbers = adoption(metrics, update)
+  const message = messages.get(update.groupId)
+
+  return (
+    <TableRow key={update.id} className="h-14">
+      <TableCell className="pl-(--card-spacing)">
+        <div className="flex flex-col gap-1">
+          <PlatformChip
+            platform={update.platform}
+            runtimeVersion={update.runtimeVersion}
+          />
+          <span className="text-xs text-muted-foreground tabular-nums">
+            {numbers.devices === 0
+              ? "no devices yet"
+              : plural(numbers.devices, "device")}
+          </span>
+        </div>
+      </TableCell>
+      <TableCell>
+        <Link
+          to="/groups/$id"
+          params={{ id: update.groupId }}
+          className="flex max-w-80 flex-col gap-0.5 rounded-sm outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
+        >
+          <span className="truncate font-medium underline-offset-4 hover:underline">
+            {update.kind === "rollback"
+              ? "Rolled back to embedded"
+              : (message ?? "Untitled update")}
+          </span>
+          <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+            <span className="font-mono">{shortId(update.id)}</span>
+            <span aria-hidden="true">&middot;</span>
+            <span>{relativeTime(update.createdAt)}</span>
+          </span>
+        </Link>
+      </TableCell>
+      <TableCell className="text-right">
+        <AdoptionCell adoption={numbers} />
+      </TableCell>
+      <TableCell>
+        <HealthBadge healthy={numbers.running} faulty={numbers.faulty} />
+      </TableCell>
+      <TableCell className="pr-(--card-spacing) text-right text-muted-foreground">
+        <Tooltip>
+          <TooltipTrigger render={<span className="cursor-default" />}>
+            {relativeTime(update.createdAt)}
+          </TooltipTrigger>
+          <TooltipContent>{absoluteTime(update.createdAt)}</TooltipContent>
+        </Tooltip>
+      </TableCell>
+    </TableRow>
   )
 }
