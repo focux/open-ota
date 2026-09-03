@@ -6,7 +6,7 @@ import { BranchName, Percent, Platform, type PublishGroupInput } from "./model.t
 import { PublishAuth } from "./routes.ts";
 import { UpdateStore, bundleInput, republishInput, type RollbackTarget } from "./store.ts";
 
-const Name = Schema.Struct({ name: Schema.String });
+const Name = Schema.Struct({ name: BranchName });
 const Id = Schema.Struct({ id: Schema.String });
 const GroupsPage = Schema.Struct({
   limit: Schema.optional(Schema.NumberFromString.check(Schema.isBetween({ minimum: 1, maximum: 200 }))),

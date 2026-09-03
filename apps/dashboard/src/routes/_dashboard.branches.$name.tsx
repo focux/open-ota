@@ -155,7 +155,7 @@ function BranchPage() {
                 </EmptyHeader>
                 <EmptyContent>
                   <code className="rounded-lg bg-muted px-2.5 py-1.5 font-mono text-xs">
-                    open-ota publish --branch {name}
+                    npx open-ota publish --branch {name}
                   </code>
                 </EmptyContent>
               </Empty>
@@ -335,7 +335,7 @@ function PublishCommand({ branch }: { readonly branch: string }) {
           </PopoverDescription>
         </PopoverHeader>
         <code className="mt-3 block rounded-lg bg-muted px-2.5 py-1.5 font-mono text-xs break-all">
-          open-ota publish --branch {branch}
+          npx open-ota publish --branch {branch}
         </code>
       </PopoverContent>
     </Popover>

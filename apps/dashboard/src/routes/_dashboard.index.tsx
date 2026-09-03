@@ -15,6 +15,7 @@ import {
   overviewQueryOptions,
   useHydrated,
 } from "@/lib/queries"
+import { AddChannelDialog } from "@/components/add-channel-dialog"
 import { ChannelCard } from "@/components/channel-card"
 import { CountriesCard } from "@/components/countries-card"
 import {
@@ -115,6 +116,14 @@ function OverviewPage() {
       <PageHeader
         title="Overview"
         subtitle="What is each channel serving right now?"
+        actions={
+          <AddChannelDialog
+            channels={
+              overview.data?.channels.map((channel) => channel.name) ?? []
+            }
+            branches={overview.data?.branches ?? []}
+          />
+        }
       />
 
       {stale && (
@@ -193,8 +202,8 @@ function OverviewPage() {
               <EmptyHeader>
                 <EmptyTitle>No channels yet</EmptyTitle>
                 <EmptyDescription className="text-pretty">
-                  A channel appears the first time a build checks in with it, or
-                  as soon as you link one to a branch.
+                  Add one with the name your build checks in with, and link it
+                  to a branch.
                 </EmptyDescription>
               </EmptyHeader>
             </Empty>
