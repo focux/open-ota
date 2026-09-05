@@ -1,0 +1,40 @@
+{
+  "name": "open-ota",
+  "version": "0.1.3",
+  "description": "Publish Expo updates to a self-hosted Open OTA server",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/focux/open-ota",
+    "directory": "packages/cli"
+  },
+  "keywords": ["expo", "expo-updates", "ota", "cloudflare"],
+  "type": "module",
+  "bin": {
+    "open-ota": "./dist/cli.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.build.json",
+    "prepublishOnly": "pnpm build",
+    "check": "tsc -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "^22",
+    "typescript": "5.9.3",
+    "vitest": "^4.1.11"
+  },
+  "dependencies": {
+    "@effect/platform-node": "catalog:",
+    "effect": "catalog:"
+  }
+}

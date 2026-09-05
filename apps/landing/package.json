@@ -1,0 +1,21 @@
+{
+  "name": "landing",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite dev --port 3001",
+    "build": "vite build",
+    "preview": "vite preview",
+    "check": "tsc --noEmit",
+    "site:dev": "alchemy dev alchemy.run.ts",
+    "site:plan": "alchemy plan alchemy.run.ts --stage production",
+    "site:deploy": "alchemy deploy alchemy.run.ts --stage production",
+    "site:destroy": "alchemy destroy alchemy.run.ts --stage production"
+  },
+  "devDependencies": {
+    "alchemy": "catalog:",
+    "effect": "catalog:",
+    "typescript": "^6",
+    "vite": "^8"
+  }
+}

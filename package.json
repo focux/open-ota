@@ -1,0 +1,28 @@
+{
+  "name": "open-ota",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Self-hosted Expo Updates server and dashboard on Cloudflare",
+  "type": "module",
+  "scripts": {
+    "dev": "alchemy dev alchemy.run.ts",
+    "build": "pnpm -r build",
+    "check": "pnpm -r check",
+    "test": "pnpm -r --workspace-concurrency=1 test",
+    "cloud:dev": "alchemy dev alchemy.run.ts",
+    "cloud:plan": "alchemy plan alchemy.run.ts",
+    "cloud:deploy": "alchemy deploy alchemy.run.ts",
+    "cloud:deploy:prod": "alchemy deploy alchemy.run.ts --stage production",
+    "cloud:destroy": "alchemy destroy alchemy.run.ts",
+    "cloud:login": "alchemy login --configure alchemy.run.ts"
+  },
+  "devDependencies": {
+    "@effect/platform-node": "catalog:",
+    "alchemy": "catalog:",
+    "effect": "catalog:"
+  },
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "packageManager": "pnpm@10.28.2"
+}

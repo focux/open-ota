@@ -1,0 +1,75 @@
+name: Release CLI
+
+# Tag a release to publish `open-ota` to npm:
+#   pnpm --filter open-ota version patch && git push --follow-tags
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+      - run: pnpm install --frozen-lockfile
+
+      # The tag is the source of truth for the release, so a mismatch is a
+      # mistake rather than something to silently publish over.
+      - name: Check the tag matches the package version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg="$(node -p "require('./packages/cli/package.json').version")"
+          if [ "$tag" != "$pkg" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match packages/cli version $pkg" >&2
+            exit 1
+          fi
+
+      # Patch tests need bspatch, which ships in the bsdiff package.
+      - run: sudo apt-get update && sudo apt-get install -y bsdiff
+      - run: pnpm --filter open-ota check
+      - run: pnpm --filter open-ota test
+
+      # pnpm publish, never npm publish: the package depends on the workspace
+      # catalog, and only pnpm rewrites `catalog:` to real versions on pack.
+      # `prepublishOnly` builds dist as part of this step.
+      #
+      # No token. npm's trusted publisher for this repository authenticates the
+      # job over OIDC and signs provenance itself, which is why the job asks for
+      # `id-token: write` above.
+      #
+      # This relies on pnpm 10, which the root `packageManager` pins. pnpm has
+      # no official OIDC support (pnpm/pnpm#9812) and pnpm 11 regressed to a 404
+      # here (pnpm/pnpm#11513), so a pnpm major bump has to be checked against a
+      # release before it lands.
+      - name: Publish to npm
+        run: pnpm --filter open-ota publish --access public --no-git-checks --report-summary
+
+      # pnpm exits 0 when it decides there is nothing new to publish, so a tag
+      # repeating a version already on npm would otherwise read as a successful
+      # release that shipped nothing.
+      - name: Check something was published
+        run: |
+          node -e "
+            const summary = require('./pnpm-publish-summary.json')
+            const published = summary.publishedPackages || []
+            if (published.length === 0) {
+              console.error('Nothing was published. Is this version already on npm?')
+              process.exit(1)
+            }
+            console.log('published ' + published.map(p => p.name + '@' + p.version).join(', '))
+          "

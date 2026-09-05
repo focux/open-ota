@@ -1,0 +1,23 @@
+packages:
+  - apps/*
+  - packages/*
+
+allowBuilds:
+  esbuild: true
+  lightningcss: true
+  unrs-resolver: true
+  workerd: true
+
+# Patched transitive dependencies pinned by Alchemy's Prisma dev tooling.
+overrides:
+  '@prisma/dev>hono': 4.13.7
+  '@prisma/dev>@hono/node-server': 1.19.17
+  '@prisma/dev>valibot': 1.4.2
+  lodash@<4.18.1: 4.18.1
+
+catalog:
+  '@effect/platform-node': 4.0.0-rc.112
+  '@effect/sql-d1': 4.0.0-rc.112
+  '@effect/sql-sqlite-node': 4.0.0-rc.112
+  alchemy: 2.0.0-beta.76
+  effect: 4.0.0-rc.112

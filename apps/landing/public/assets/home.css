@@ -1,0 +1,273 @@
+/* ── Hero (Figma 1292-3184): installs badge + floating tiles ── */
+.header { padding-top: 40px; padding-bottom: 128px; }
+.hero-badge {
+  position: relative; z-index: 6;
+  display: inline-flex; align-items: center; height: 28px; padding: 0 12px;
+  border-radius: 24px; background: #181818;
+  font-size: 13px; font-weight: 400; line-height: 24.2px; color: #b5b5b5;
+  box-shadow:
+    0 1px 3px 0 rgba(0, 0, 0, 0.04),
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.02),
+    inset 0 0 0 1px rgba(196, 196, 196, 0.05);
+  margin-bottom: 12px;
+}
+.hero-badge-dim { color: #939393; margin-left: 4px; }
+/* Figma type: Saans 42/45, -0.21px, #fefefe, wrapping at 409px;
+   subtitle 16/24.2 #9e9e9e single line; stack gaps 12/12/20. */
+.header .title {
+  margin-top: 0;
+  font-size: 42px;
+  line-height: 45px;
+  letter-spacing: -0.21px;
+  color: #fefefe;
+  max-width: 409px;
+}
+.header .subtitle { margin-top: 12px; max-width: 560px; color: #9e9e9e; }
+.header .skill-cta-row { margin-top: 20px; }
+/* Below ~900px the scatter's inner tiles reach into the copy's column.
+   The badge already sat above them; the rest of the hero copy joins it,
+   so a tile slides behind the headline as depth instead of colliding
+   with it. Keeps the CTAs clickable at every width, too. */
+.header .title,
+.header .subtitle,
+.header .skill-cta-row { position: relative; z-index: 6; }
+@media (max-width: 639px) {
+  .header .title { font-size: 30px; line-height: 34px; }
+  /* Tracks `.app`'s narrower gutter at this width. */
+  .header { --app-gutter: 12px; }
+}
+
+/* ── Section shell (styling from transitions.dev/pro) ── */
+.home-section { width: 100%; max-width: 1008px; margin: 96px auto 0; }
+.home-section-title {
+  text-align: center; font-family: "Geist", var(--font-sans);
+  font-size: 30px; font-weight: 500; letter-spacing: -0.01em;
+  color: var(--text); margin: 0 0 40px;
+}
+@media (max-width: 640px) {
+  .home-section { margin-top: 64px; }
+  .home-section-title { font-size: 23px; margin-bottom: 28px; }
+}
+
+/* ── How to use: tall showcase cards under a left-aligned lede.
+   Each step carries a mock of the moment itself (terminal, diff,
+   Studio panel) with the copy at the foot of the card. ── */
+.howto-head { max-width: 640px; margin-bottom: 40px; }
+.howto-title {
+  margin: 0;
+  font-family: "Geist", var(--font-sans);
+  font-size: 38px; font-weight: 500; line-height: 1.16;
+  letter-spacing: -0.01em; color: var(--text);
+}
+.howto-title-dim { opacity: 0.6; }
+.howto-lede { margin: 14px 0 0; font-size: 16px; line-height: 24px; color: var(--text-muted); max-width: 46ch; }
+.howto-steps {
+  list-style: none; margin: 0; padding: 0;
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 18px; align-items: stretch;
+}
+/* Fill and shadow come from the gallery card surface in site.css. */
+.howto-step {
+  display: flex; flex-direction: column; gap: 6px; min-width: 0;
+  padding: 32px; border-radius: 24px;
+}
+.howto-step > * { position: relative; z-index: 2; }
+/* Badge above the title, matching the How to use cards: the halo needs
+   room, so align-items keeps the badge at its own width rather than
+   stretching it across the column. */
+.howto-step-meta {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 16px;
+}
+.howto-step-num {
+  position: relative;
+  /* Own stacking context, or the halo's z-index -1 sinks behind the card. */
+  isolation: isolate;
+  flex: none; width: 21px; height: 21px; border-radius: 50px;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: #0071fc;
+  box-shadow:
+    0 1px 3px 0 rgba(0, 0, 0, 0.04),
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.04),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.06),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.1);
+  color: #ffffff;
+  font-size: 11px; line-height: 12px; font-weight: 500;
+}
+/* The halo behind the disc (Figma 1418:38284): the same blue at
+   20 percent, reaching past each edge in the design's 3:2 ratio. */
+.howto-step-num::before {
+  content: "";
+  position: absolute;
+  inset: -5.25px;
+  border-radius: 50px;
+  background: #0071fc;
+  opacity: 0.2;
+  z-index: -1;
+}
+.howto-step-title { margin: 0; font-size: 15px; font-weight: 500; line-height: 20px; color: #ededed; }
+.howto-step-text { margin: 0; font-size: 14px; line-height: 22px; color: var(--text-muted); overflow-wrap: anywhere; }
+.howto-step-text code {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 18px;
+  padding: 2px 6px;
+  border-radius: 6px;
+  background: var(--code-chip-bg);
+  box-shadow: inset 0 0 0 1px var(--code-chip-ring);
+  color: var(--text);
+}
+/* Inline links: a 50% underline at rest that reaches full ink on hover, like transitions.dev. */
+.howto-step-text a { color: var(--text); text-decoration: underline; text-underline-offset: 2px; text-decoration-color: color-mix(in srgb, currentColor 50%, transparent); transition: text-decoration-color 180ms ease; }
+.howto-step-text a:hover { text-decoration-color: currentColor; }
+@media (max-width: 900px) {
+  .howto-title { font-size: 30px; }
+  .howto-steps { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+  .howto-step { padding: 24px; }
+}
+
+/* ── FAQ accordion (styling from transitions.dev/pro) ───────── */
+.faq-list {
+  --acc-expand: 250ms; --acc-collapse: 250ms; --acc-chevron: 250ms;
+  --acc-ease: var(--ease-smooth-out); --faq-border: rgba(255, 255, 255, 0.08);
+  display: flex; flex-direction: column; max-width: 640px; margin: 0 auto;
+}
+.t-acc { border-top: 1px solid var(--faq-border); }
+.faq-list .t-acc:last-child { border-bottom: 1px solid var(--faq-border); }
+.t-acc-head {
+  width: 100%; display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; padding: 16px 0; border: 0; background: none; cursor: pointer;
+  font-family: var(--font-sans); font-size: 15px; font-weight: 400; line-height: 22px;
+  color: var(--text); text-align: left; -webkit-tap-highlight-color: transparent;
+}
+.t-acc-head:focus-visible { outline: 2px solid var(--icon-color); outline-offset: 2px; border-radius: 6px; }
+.t-acc-chevron {
+  display: inline-flex; flex-shrink: 0; color: var(--text-muted);
+  transform: scaleY(1); transform-origin: center;
+  transition: transform var(--acc-chevron) var(--acc-ease);
+}
+.t-acc-chevron svg { width: 16px; height: 16px; display: block; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+.t-acc-chevron path { vector-effect: non-scaling-stroke; }
+.t-acc[data-open="true"] .t-acc-chevron { transform: scaleY(-1); }
+.t-acc-panel { display: grid; grid-template-rows: 0fr; transition: grid-template-rows var(--acc-collapse) var(--acc-ease); }
+.t-acc[data-open="true"] .t-acc-panel { grid-template-rows: 1fr; transition: grid-template-rows var(--acc-expand) var(--acc-ease); }
+.t-acc-panel-inner {
+  overflow: hidden; opacity: 0; filter: blur(var(--blur-small));
+  transition: opacity var(--acc-collapse) var(--acc-ease), filter var(--acc-collapse) var(--acc-ease);
+}
+.t-acc[data-open="true"] .t-acc-panel-inner {
+  opacity: 1; filter: blur(0);
+  transition: opacity var(--acc-expand) var(--acc-ease), filter var(--acc-expand) var(--acc-ease);
+}
+.t-acc-panel-inner p { margin: 0 0 16px; padding-right: 28px; font-size: 14px; line-height: 22px; color: var(--text-muted); }
+.t-acc-panel-inner code {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 18px;
+  padding: 2px 6px;
+  border-radius: 6px;
+  background: var(--code-chip-bg);
+  box-shadow: inset 0 0 0 1px var(--code-chip-ring);
+  color: var(--text);
+}
+/* Inline links: a 50% underline at rest that reaches full ink on hover, like transitions.dev. */
+.t-acc-panel-inner a { color: var(--text); text-decoration: underline; text-underline-offset: 2px; text-decoration-color: color-mix(in srgb, currentColor 50%, transparent); transition: text-decoration-color 180ms ease; }
+.t-acc-panel-inner a:hover { text-decoration-color: currentColor; }
+@media (prefers-reduced-motion: reduce) {
+  .t-acc-panel, .t-acc-panel-inner, .t-acc-chevron { transition: none !important; }
+}
+
+/* Hero CTAs — Figma Button/Small (node 1292:4277): 32px pills,
+   light #e9e9e9 primary, #2a2a2a secondary with the material ring. */
+.skill-cta-row { gap: 11px; }
+.skill-cta-row .skill-btn {
+  height: 32px;
+  font-size: 13px;
+  line-height: 13px;
+  font-weight: 500;
+}
+/* Figma 1292:4277 Button/Small/Select/Primary/Token: both pills share
+   the body; Browse wears the grey token surface, Get Pro access the blue.
+   The class is doubled so these outrank site.css's theme-scoped
+   .skill-btn--* rules, which carry an attribute selector. */
+.skill-cta-row .skill-btn.skill-btn--primary,
+.skill-cta-row .skill-btn.skill-btn--secondary {
+  padding: 0 12px;
+  border-radius: 24px;
+  color: #ffffff;
+}
+.skill-cta-row .skill-btn.skill-btn--primary {
+  background: #2a2a2a;
+  box-shadow:
+    0 1px 3px 0 rgba(0, 0, 0, 0.04),
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.04),
+    inset 0 0 0 1px rgba(0, 0, 0, 0.06),
+    inset 0 -1px 0 0 rgba(0, 0, 0, 0.06),
+    inset 0 0 0 1px rgba(196, 196, 196, 0.1);
+}
+.skill-cta-row .skill-btn.skill-btn--primary:hover { background: #323232; }
+.skill-cta-row .skill-btn.skill-btn--primary:active { background: #262626; }
+.skill-cta-row .skill-btn.skill-btn--secondary {
+  background: #0071fc;
+  box-shadow:
+    0 1px 3px 0 rgba(0, 0, 0, 0.04),
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.04),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.06),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.1);
+}
+.skill-cta-row .skill-btn.skill-btn--secondary:hover { background: #1a7dff; }
+.skill-cta-row .skill-btn.skill-btn--secondary:active { background: #0063e0; }
+
+/* ── Added for Open OTA ─────────────────────────────────────────
+   The hero carries a screenshot of the dashboard where the reference
+   carries its floating library tiles. It is the same card and stage from
+   site.css, released from the 320x344 tile size. */
+.shot {
+  width: 100%; max-width: 1008px;
+  height: auto; min-height: 0; max-height: none;
+}
+.shot .card-stage {
+  position: relative; left: auto; top: auto;
+  width: auto; max-width: none; height: auto;
+  margin: 12px;
+}
+.shot .card-stage img { width: 100%; height: auto; display: block; }
+/* The dark shot in the dark theme, the light one in the light theme. */
+.shot-img--dark { display: none; }
+html[data-theme="dark"] .shot-img--dark { display: block; }
+html[data-theme="dark"] .shot-img--light { display: none; }
+
+/* A feature card carries an icon where a how-to step carries its number.
+   Same disc, same halo, one size up so a 14px glyph fits. */
+.howto-step-ico {
+  position: relative;
+  isolation: isolate;
+  flex: none; width: 28px; height: 28px; border-radius: 50px;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: #0071fc;
+  box-shadow:
+    0 1px 3px 0 rgba(0, 0, 0, 0.04),
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.04),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.06),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.1);
+  color: #ffffff;
+}
+.howto-step-ico::before {
+  content: "";
+  position: absolute;
+  inset: -7px;
+  border-radius: 50px;
+  background: #0071fc;
+  opacity: 0.2;
+  z-index: -1;
+}
+.howto-step-ico svg {
+  width: 14px; height: 14px; display: block;
+  fill: none; stroke: currentColor; stroke-width: 1.6;
+  stroke-linecap: round; stroke-linejoin: round;
+}
+/* Six features read as a grid rather than a numbered sequence, so they lose
+   the ordered-list semantics but keep the step card's surface. */
+.feature-grid { list-style: none; }

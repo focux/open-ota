@@ -1,0 +1,17 @@
+node_modules/
+dist/
+.output/
+.wrangler/
+.alchemy/
+.env
+.env.*
+!.env.example
+*.log
+.DS_Store
+.keys/
+.refs/
+
+# Working notes and design docs, kept local
+docs/
+# .refs/ submodules are a local reference checkout, not part of the project
+.gitmodules
