@@ -1,6 +1,6 @@
 {
   "name": "open-ota",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Publish Expo updates to a self-hosted Open OTA server",
   "license": "MIT",
   "repository": {
