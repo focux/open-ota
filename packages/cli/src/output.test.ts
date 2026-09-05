@@ -51,7 +51,7 @@ describe("terminal output", () => {
       verbose: false,
     });
     output.report({ type: "start", message: "Preparing patches" }, 0);
-    output.report({ type: "warning", message: "Patches unavailable. Update remains published." }, 100);
+    output.report({ type: "warning", message: "Patches unavailable. The update still publishes." }, 100);
     const count = writes.length;
     output.draw(1000);
     expect(writes).toHaveLength(count);

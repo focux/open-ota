@@ -23,9 +23,11 @@ export const generatePatches = Effect.fn("patches.generate")(function* (options:
   let skipped = 0;
   let failed = 0;
   let missingBsdiff = false;
-  yield* progress.report({ type: "start", message: "Update published. Preparing optional delta patches" });
+  yield* progress.report({ type: "start", message: "Preparing optional delta patches" });
   for (const target of options.targets) {
     yield* Effect.gen(function* () {
+      // The new bundle is not published yet, so it only appears here when the
+      // same bytes were published before; ask for one extra row to cover that.
       const bundles = yield* server.branchBundles(options.branch, target.platform, target.runtimeVersion, 4);
       const bases = [...new Set(bundles.map((bundle) => bundle.hash))]
         .filter((hash) => hash !== target.hash)
@@ -96,7 +98,7 @@ export const generatePatches = Effect.fn("patches.generate")(function* (options:
   if (failed > 0) {
     yield* progress.report({
       type: "warning",
-      message: `Update remains published. Devices without a delta patch will download the full bundle. ${missingBsdiff ? "Install bsdiff on PATH or use --no-patches to skip this step." : "Run with --verbose for patch diagnostics."}`,
+      message: `The update still publishes. Devices without a delta patch will download the full bundle. ${missingBsdiff ? "Install bsdiff on PATH or use --no-patches to skip this step." : "Run with --verbose for patch diagnostics."}`,
     });
   } else if (uploaded === 0 && skipped === 0) {
     yield* progress.report({ type: "info", message: "No previous bundles available for delta patches." });

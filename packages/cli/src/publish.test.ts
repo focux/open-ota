@@ -266,7 +266,8 @@ describe("publish", () => {
     const dist = await makeDist();
     const { server, calls } = makeServer([], { group: { status: 201, body: "{}" } });
     await expect(publish(options(dist, server))).rejects.toThrow("Invalid response");
-    expect(calls.some((call) => call.url.includes("/publish/branches/"))).toBe(false);
+    // Patches are prepared first, so the failed group submit is the last call.
+    expect(calls.at(-1)?.url).toBe("https://ota.test/publish/groups");
   });
 
   it("fails with the status and body of a rejected request", async () => {
@@ -355,6 +356,13 @@ describe("patches", () => {
     expect(put.contentType).toBe("application/octet-stream");
     expect(put.body).toBe("patch bytes");
     expect(logs).toContain(`ios: patch ${sha(olderIosBundle).slice(0, 7)} to ${sha(iosBundle).slice(0, 7)}, 11 bytes`);
+
+    // No device can ask for the new bundle until the group exists, so the patch
+    // must already be on the server by then.
+    const patchIndex = calls.findIndex((call) => call.url.includes("/publish/patches/"));
+    const groupIndex = calls.findIndex((call) => call.url.endsWith("/publish/groups"));
+    expect(patchIndex).toBeGreaterThanOrEqual(0);
+    expect(groupIndex).toBeGreaterThan(patchIndex);
   });
 
   it("warns and keeps the publish when bsdiff fails", async () => {
@@ -395,7 +403,7 @@ describe("patches", () => {
     },
   );
 
-  it("patches all three prior bundles after publishing the new one", async () => {
+  it("patches all three prior bundles before publishing the new one", async () => {
     const dist = await makeDist();
     const older = ["older one", "older two", "older three"];
     const { server } = makeServer([], {

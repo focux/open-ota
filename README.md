@@ -163,7 +163,8 @@ and runtime. Promote a tested group to `production` when ready; production build
 
 Patches are optional and need `bsdiff` on the publishing machine (`brew install bsdiff` on macOS,
 `sudo apt-get install bsdiff` on Debian/Ubuntu). Without it the update still publishes as a full
-download, and `--no-patches` skips them entirely.
+download, and `--no-patches` skips them entirely. Patches are uploaded before the update group is
+published, so no device can fetch a new bundle before its patches exist.
 
 See the [CLI reference](packages/cli/README.md) for rollback commands, `--json` output, verbosity,
 shell completions, and every flag.

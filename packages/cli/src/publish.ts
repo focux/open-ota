@@ -194,9 +194,16 @@ export const publish = Effect.fn("publish.publish")(function* (options: PublishO
     });
   }
 
+  // Patches go up before the group is published. Full bundles are cached at the
+  // edge per base update, so a device that fetched the bundle before its patch
+  // existed would pin the full download for every later device on that base.
+  if (!options.noPatches) {
+    yield* generatePatches({ branch: options.branch, targets });
+  }
+
   const commit = yield* gitCommit(projectDir);
   const who = yield* actor(projectDir);
-  const published = yield* submit({
+  return yield* submit({
     branch: options.branch,
     ...(options.message !== undefined && { message: options.message }),
     ...(commit !== undefined && { gitCommit: commit }),
@@ -205,10 +212,6 @@ export const publish = Effect.fn("publish.publish")(function* (options: PublishO
     expoConfig,
     updates,
   });
-  if (!options.noPatches) {
-    yield* generatePatches({ branch: options.branch, targets });
-  }
-  return published;
 });
 
 export const rollbackToEmbedded = Effect.fn("publish.rollbackToEmbedded")(function* (options: RollbackOptions) {

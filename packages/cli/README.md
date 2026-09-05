@@ -16,9 +16,10 @@ npx open-ota publish --branch staging --message "Fix payment sheet"
 ```
 
 It checks configuration, credentials, signing, and active rollouts before exporting both platforms.
-It resolves each platform's runtime version, uploads missing assets, publishes the update group,
-and optionally builds bsdiff patches against up to three distinct previous bundles. `bsdiff` must
-be on PATH; otherwise patches are skipped with a warning.
+It resolves each platform's runtime version, uploads missing assets, optionally builds bsdiff
+patches against up to three distinct previous bundles, and then publishes the update group. Patches
+go first so no device can fetch the new bundle before its patch exists. `bsdiff` must be on PATH;
+otherwise patches are skipped with a warning.
 
 ## Credentials
 
@@ -94,7 +95,7 @@ CI, redirected output, `TERM=dumb`, and `--verbose` use plain progress lines. Se
 disable colors. Progress, warnings, and the human-readable summary go to stderr.
 
 Use `--verbose` to stream subprocess output and show individual patch diagnostics. Patch failures
-are warnings: the update remains published and devices can download full bundles. Install `bsdiff`
+are warnings: the update still publishes and devices can download full bundles. Install `bsdiff`
 on PATH to generate patches, or pass `--no-patches` to skip them.
 
 Use `--json` to write one result object to stdout for scripts:
