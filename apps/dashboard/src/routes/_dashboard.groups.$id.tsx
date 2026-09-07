@@ -3,10 +3,11 @@ import { useQuery } from "@tanstack/react-query"
 import { HugeiconsIcon } from "@hugeicons/react"
 import { ArrowDown01Icon } from "@hugeicons/core-free-icons"
 
-import type { Metrics, Update } from "@/lib/api"
+import type { Metrics, Update, UpdatePatches } from "@/lib/api"
 import {
   absoluteTime,
   flagEmoji,
+  formatBytes,
   plural,
   relativeTime,
   shortId,
@@ -21,6 +22,7 @@ import {
   groupQueryOptions,
   metricsQueryOptions,
   overviewQueryOptions,
+  updatePatchesQueryOptions,
   useHydrated,
 } from "@/lib/queries"
 import { ErrorState } from "@/components/feedback"
@@ -401,8 +403,180 @@ function UpdateCard({
             </CollapsibleContent>
           </Collapsible>
         )}
+        {update.kind === "bundle" && <DeltaPatches updateId={update.id} />}
       </FramePanel>
     </Frame>
+  )
+}
+
+/**
+ * The patches stored toward this bundle, and what devices actually
+ * downloaded. Failures stay quiet: the rest of the card does not depend on it.
+ */
+function DeltaPatches({ updateId }: { readonly updateId: string }) {
+  const hydrated = useHydrated()
+  const patches = useQuery({
+    ...updatePatchesQueryOptions(updateId),
+    enabled: hydrated,
+  })
+
+  if (patches.isPending || patches.isError) {
+    return (
+      <div className="flex items-center justify-between border-t px-4 py-2.5 text-sm">
+        <span className="font-medium">Delta patches</span>
+        <span className="text-xs text-muted-foreground">
+          {patches.isError ? "Unavailable" : "Loading"}
+        </span>
+      </div>
+    )
+  }
+
+  const data = patches.data
+  const wire = data.launchAsset.wireSize
+  return (
+    <Collapsible>
+      <CollapsibleTrigger
+        render={
+          <button
+            type="button"
+            className="group/patches flex w-full items-center justify-between border-t px-4 py-2.5 text-sm transition-colors duration-150 ease-out outline-none hover:bg-muted/40 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:ring-inset"
+          />
+        }
+      >
+        <span className="font-medium">Delta patches</span>
+        <span className="flex items-center gap-2 text-xs text-muted-foreground">
+          {plural(data.patches.length, "patch", "patches")}
+          {wire !== null && ` · full download ${formatBytes(wire)}`}
+          <HugeiconsIcon
+            icon={ArrowDown01Icon}
+            strokeWidth={2}
+            className="size-4 transition-transform duration-150 ease-out group-aria-expanded/patches:rotate-180"
+          />
+        </span>
+      </CollapsibleTrigger>
+      <CollapsibleContent>
+        <DeliveryLine data={data} />
+        {data.patches.length > 0 ? (
+          <div className="border-t">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="pl-4 text-xs text-muted-foreground">
+                    From
+                  </TableHead>
+                  <TableHead className="w-24 text-right text-xs text-muted-foreground">
+                    Patch
+                  </TableHead>
+                  <TableHead className="w-32 text-right text-xs text-muted-foreground">
+                    Of full download
+                  </TableHead>
+                  <TableHead className="w-36 pr-4 text-xs text-muted-foreground">
+                    Computed
+                  </TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody className="[&_tr:last-child]:border-0">
+                {data.patches.map((patch) => (
+                  <TableRow key={patch.baseHash} className="h-11">
+                    <TableCell className="pl-4">
+                      <span className="flex flex-wrap items-center gap-1.5">
+                        {patch.bases.length === 0 ? (
+                          <CopyButton
+                            value={patch.baseHash}
+                            label={maskHash(patch.baseHash)}
+                          />
+                        ) : (
+                          patch.bases.map((base) => (
+                            <span
+                              key={base.updateId}
+                              className="flex items-center gap-1"
+                            >
+                              <CopyButton
+                                value={base.updateId}
+                                label={shortId(base.updateId)}
+                              />
+                              {base.embedded && (
+                                <Badge variant="secondary">Build</Badge>
+                              )}
+                            </span>
+                          ))
+                        )}
+                      </span>
+                    </TableCell>
+                    <TableCell className="text-right tabular-nums">
+                      {formatBytes(patch.size)}
+                    </TableCell>
+                    <TableCell className="text-right tabular-nums">
+                      {patch.ratio === null ? (
+                        <EmptyValue reason="The full bundle is no longer stored" />
+                      ) : (
+                        `${Math.round(patch.ratio * 100)}%`
+                      )}
+                    </TableCell>
+                    <TableCell
+                      className="pr-4 text-muted-foreground"
+                      title={absoluteTime(patch.createdAt)}
+                    >
+                      {relativeTime(patch.createdAt)}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        ) : (
+          <p className="border-t px-4 py-3 text-xs text-muted-foreground">
+            No patch was worth storing for this bundle. Patches are kept only
+            under {Math.round(data.maxRatio * 100)}% of the full download.
+          </p>
+        )}
+      </CollapsibleContent>
+    </Collapsible>
+  )
+}
+
+/** What went over the wire for this bundle lately, when the server can tell. */
+function DeliveryLine({ data }: { readonly data: UpdatePatches }) {
+  const delivery = data.delivery
+  if (delivery === null) {
+    return (
+      <p className="border-t px-4 py-3 text-xs text-muted-foreground">
+        Delivery counts are off: the server was deployed with
+        OTA_DELIVERY_STATS=off, or Analytics Engine did not answer.
+      </p>
+    )
+  }
+  const downloads = delivery.full + delivery.patch
+  const wire = data.launchAsset.wireSize
+  // Every patched download would otherwise have cost a full one.
+  const saved =
+    wire === null ? null : delivery.patch * wire - delivery.patchBytes
+  return (
+    <div className="flex flex-wrap items-end gap-6 border-t px-4 py-3">
+      <Figure
+        label="Downloads"
+        value={downloads}
+        hint={`Last ${plural(delivery.days, "day")}.`}
+      />
+      <Figure
+        label="Patched"
+        value={delivery.patch}
+        hint={
+          downloads === 0
+            ? "No downloads yet."
+            : `${Math.round((delivery.patch / downloads) * 100)}% took a patch.`
+        }
+      />
+      <div className="flex flex-col gap-1">
+        <span className="text-xs text-muted-foreground">Saved</span>
+        <span className="text-2xl leading-none font-semibold tabular-nums">
+          {saved === null ? "–" : formatBytes(Math.max(0, saved))}
+        </span>
+        <span className="text-xs text-pretty text-muted-foreground">
+          Against full downloads.
+        </span>
+      </div>
+    </div>
   )
 }
 

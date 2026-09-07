@@ -164,6 +164,44 @@ const RolloutResult = Schema.Struct({
   rolloutPercent: Schema.Number,
 })
 
+// A stored bsdiff patch toward one update's bundle: which base it applies to,
+// which updates run that base, and how it compares with the full download.
+const StoredPatch = Schema.Struct({
+  baseHash: Schema.String,
+  size: Schema.Number,
+  createdAt: Schema.String,
+  ratio: Schema.NullOr(Schema.Number),
+  bases: Schema.Array(
+    Schema.Struct({ updateId: Schema.String, embedded: Schema.Boolean })
+  ),
+})
+
+// How the bundle went out recently, from Analytics Engine. Null when the
+// server has no API token to query it with.
+const AssetDelivery = Schema.Struct({
+  days: Schema.Number,
+  full: Schema.Number,
+  patch: Schema.Number,
+  fullBytes: Schema.Number,
+  patchBytes: Schema.Number,
+})
+
+const UpdatePatches = Schema.Struct({
+  updateId: Schema.String,
+  launchAsset: Schema.Struct({
+    hash: Schema.String,
+    size: Schema.NullOr(Schema.Number),
+    compressedSize: Schema.NullOr(Schema.Number),
+    // What a device downloads without a patch: the gzip size at the edge.
+    wireSize: Schema.NullOr(Schema.Number),
+    // False once the retention sweep removed the bundle.
+    present: Schema.Boolean,
+  }),
+  maxRatio: Schema.Number,
+  patches: Schema.Array(StoredPatch),
+  delivery: Schema.NullOr(AssetDelivery),
+})
+
 export type Platform = typeof Platform.Type
 export type StoredAsset = typeof StoredAsset.Type
 export type BundleUpdate = typeof BundleUpdate.Type
@@ -178,6 +216,9 @@ export type CountryDevices = typeof CountryDevices.Type
 export type RollbackTarget = typeof RollbackTarget.Type
 export type RollbackMode = "previous" | "embedded"
 export type PublishResult = typeof PublishResult.Type
+export type StoredPatch = typeof StoredPatch.Type
+export type AssetDelivery = typeof AssetDelivery.Type
+export type UpdatePatches = typeof UpdatePatches.Type
 
 /**
  * `rejected` is the server refusing the request, `unreachable` is not getting
@@ -216,6 +257,13 @@ export const api = {
       "GET",
       undefined,
       Group
+    ),
+  updatePatches: (updateId: string) =>
+    runRequest(
+      `/api/admin/updates/${encodeURIComponent(updateId)}/patches`,
+      "GET",
+      undefined,
+      UpdatePatches
     ),
   setChannel: (channel: string, branch: string) =>
     runRequest(

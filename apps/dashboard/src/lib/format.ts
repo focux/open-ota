@@ -39,6 +39,19 @@ export function flagEmoji(country: string): string {
   )
 }
 
+/** "84 KB", "2.1 MB": one decimal above kilobytes, none below. */
+export function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  const suffixes = ["KB", "MB", "GB"]
+  let value = bytes / 1024
+  let suffix = 0
+  while (value >= 1024 && suffix < suffixes.length - 1) {
+    value /= 1024
+    suffix++
+  }
+  return `${value < 10 ? value.toFixed(1) : Math.round(value)} ${suffixes[suffix]}`
+}
+
 /** "1 device", "8 devices". Pass `many` for a noun that does not take an s. */
 export function plural(count: number, noun: string, many?: string): string {
   return `${count.toLocaleString()} ${count === 1 ? noun : (many ?? `${noun}s`)}`

@@ -11,6 +11,7 @@ export const queryKeys = {
   branchSummary: (branch: string) => ["branch-summary", branch] as const,
   rollbackPlan: (branch: string) => ["rollback-plan", branch] as const,
   group: (id: string) => ["group", id] as const,
+  updatePatches: (updateId: string) => ["update-patches", updateId] as const,
 }
 
 const groupsPageSize = 50
@@ -29,6 +30,13 @@ export const groupQueryOptions = (id: string) =>
   queryOptions({
     queryKey: queryKeys.group(id),
     queryFn: () => api.group(id),
+  })
+
+/** The delta patches toward one update's bundle, and how it has been delivered. */
+export const updatePatchesQueryOptions = (updateId: string) =>
+  queryOptions({
+    queryKey: queryKeys.updatePatches(updateId),
+    queryFn: () => api.updatePatches(updateId),
   })
 
 /** The newest page of a branch, for the branches index. */
