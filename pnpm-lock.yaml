@@ -41,9 +41,6 @@ importers:
       effect:
         specifier: 'catalog:'
         version: 4.0.0-rc.112
-      esbuild:
-        specifier: ^0.28.2
-        version: 0.28.2
 
   apps/dashboard:
     dependencies:
