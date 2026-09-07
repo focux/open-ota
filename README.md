@@ -46,7 +46,7 @@ Choose the previous update or embedded JavaScript for each build, with the affec
 - **Gradual rollouts.** Start with a percentage of devices and increase it to 100%. The server prevents overlapping rollouts for the same branch, platform, and runtime, including concurrent publishes.
 - **Rollbacks.** Return each build to its previous update or embedded JavaScript from the dashboard.
 - **Setup and diagnostics.** `open-ota init` configures your app; `open-ota doctor` checks configuration, credentials, runtimes, and server signatures. Publish runs these checks before exporting.
-- **Efficient delivery.** Content-addressed assets are deduplicated and cached. Optional bsdiff patches reduce bundle downloads for clients that support them, with full bundles as the fallback.
+- **Efficient delivery.** Content-addressed assets are deduplicated and cached at the edge. bsdiff delta patches are computed at publish time against the bundles devices actually run, including the JavaScript embedded in store builds, verified by the server before they are stored, and kept only when they beat the compressed download. Full bundles are always the fallback, and a nightly sweep removes bundles nothing references.
 - **Device health.** See reported update adoption, failed updates, runtime versions, and country breakdowns from client check-ins, without adding a separate telemetry SDK.
 - **Your infrastructure.** Workers, D1, R2, Analytics Engine, and a dashboard protected by Cloudflare Access, deployed together with Alchemy.
 
@@ -86,6 +86,10 @@ Fill in `.env`:
 | `OTA_ACCESS_EMAIL_DOMAINS` | Email domains allowed into the dashboard, comma separated. |
 | `OTA_UPDATES_DOMAIN` | Updates hostname, such as `updates.example.com`. Omit for a `workers.dev` URL. |
 | `OTA_DASHBOARD_DOMAIN` | Dashboard hostname, such as `ota.example.com`. Omit for a `workers.dev` URL. |
+| `OTA_PATCH_MAX_RATIO` | Largest patch worth storing, as a share of the compressed bundle download. Default `0.3`. |
+| `OTA_PATCH_MAX_BUNDLE_MB` | Bundles above this get no patches, since the Worker verifies each one in memory. Default `32`. |
+| `OTA_RETAIN_GROUPS`, `OTA_RETAIN_DAYS`, `OTA_RETAIN_DEVICE_DAYS` | What the nightly sweep keeps. Defaults `20`, `30`, `90`. See [Delta patches and retention](#delta-patches-and-retention). |
+| `OTA_DELIVERY_STATS` | Set to `off` to skip minting the analytics-only API token the dashboard's download counts use, for deploy credentials that cannot create tokens. |
 
 Set at least one of the two Access lists; either one grants access, and every stage that is not a
 `dev_` stage refuses to deploy without one. Custom hostnames must belong to a zone in your account.
@@ -161,10 +165,10 @@ Finish the rollout at 100%, or use **Roll back**, before publishing again for th
 and runtime. Promote a tested group to `production` when ready; production builds must check the
 `production` channel with a matching runtime version.
 
-Patches are optional and need `bsdiff` on the publishing machine (`brew install bsdiff` on macOS,
-`sudo apt-get install bsdiff` on Debian/Ubuntu). Without it the update still publishes as a full
-download, and `--no-patches` skips them entirely. Patches are uploaded before the update group is
-published, so no device can fetch a new bundle before its patches exist.
+Delta patches need nothing installed: the CLI ships the bsdiff engine as WebAssembly. Patches are
+computed and verified on the publishing machine, verified again by the server, and uploaded before
+the update group is published, so no device can fetch a new bundle before its patches exist.
+`--no-patches` skips them, and `open-ota patches` computes whatever a branch is missing later.
 
 See the [CLI reference](packages/cli/README.md) for rollback commands, `--json` output, verbosity,
 shell completions, and every flag.
@@ -220,8 +224,61 @@ is served at the edge without invoking the Worker or reading R2. They `Vary` on 
 `Expo-Current-Update-ID`, so a cached full bundle cannot shadow a bsdiff patch for a device on a
 different base update.
 
-Patch responses are not cached. Each one is specific to the base update the device already has, so
-they are returned `private, max-age=0`. Everything else the Worker returns is `no-store` by default.
+A patch is fixed by the bundle it targets and the update it applies to, which is exactly what the
+cache key varies on, so patches are cached like bundles: `public, max-age=31536000, immutable`. The
+one answer that can change is a full bundle served to a device that asked for a patch before one
+existed for its base; that answer is held for five minutes. Everything else the Worker returns is
+`no-store` by default.
+
+## Delta patches and retention
+
+A device that already runs one update asks for the next bundle with `A-IM: bsdiff` and the id of
+what it runs. When the server has a patch for that pair it answers `226` with the patch, and the
+`expo-updates` client rebuilds the bundle, checks its hash, and falls back to a full download if
+anything is off.
+
+**Which bases get a patch.** On publish, the CLI asks the server which bundles are worth diffing
+against, and the server answers from what it knows: the bundles devices on the branch reported
+running in the last 30 days, most devices first; the JavaScript embedded in store builds that were
+registered with `open-ota register-embedded`; and the most recent publishes. Up to eight distinct
+bundles per platform, and the newest bundle never patches against itself.
+
+**When a patch is kept.** The launch asset is JavaScript, which Cloudflare compresses at the edge,
+so a patch competes with the gzipped bundle, not the raw one. The server measures the compressed
+size at upload and stores a patch only when it is at most `OTA_PATCH_MAX_RATIO` of that size. The
+CLI applies the same rule before uploading. Bundles above `OTA_PATCH_MAX_BUNDLE_MB` get no patches.
+
+**Trust.** The CLI applies each patch it computed and checks the result before uploading. The server
+applies it again with the same engine and refuses to store anything that does not rebuild the
+target bundle byte for byte. Devices verify the manifest hash as always.
+
+**Fresh installs.** A device that has never taken an update runs the bundle baked into its build,
+and that is the most common base in most fleets. Register each store build once and the server can
+patch from it:
+
+```sh
+# iOS: inside the built .app; Android: inside the APK or AAB (unzip it first)
+npx open-ota register-embedded --platform ios \
+  --manifest build/YourApp.app/app.manifest --bundle build/YourApp.app/main.jsbundle
+npx open-ota register-embedded --platform android \
+  --manifest apk/assets/app.manifest --bundle apk/assets/index.android.bundle
+npx open-ota patches --branch production
+```
+
+**Retention.** A sweep runs nightly (`17 3 * * *` UTC) and can be run from the dashboard API with
+`POST /admin/gc`. It deletes bundles, assets and patches that nothing retained references. Retained
+means: the newest `OTA_RETAIN_GROUPS` groups on each branch, any group younger than
+`OTA_RETAIN_DAYS`, any update a device reported running or receiving within `OTA_RETAIN_DEVICE_DAYS`,
+any active rollout, every registered embedded bundle, and anything uploaded or checked in the last
+day, since a publish may still be in flight. An update whose bundle was swept stays in the history
+but is no longer offered as a rollback target.
+
+**Visibility.** Each update in the dashboard lists the patches stored toward its bundle, which
+updates or builds they apply to, and their share of the full download. It also shows how many
+downloads took a patch over the last week and the bytes that saved. Those counts come from the
+Analytics Engine SQL API, which has no Worker binding, so the deploy mints an account API token
+scoped to reading analytics and binds it to the Worker as a secret. Deploying needs a credential
+allowed to create tokens; set `OTA_DELIVERY_STATS=off` to skip it.
 
 ## Scope
 
@@ -234,7 +291,8 @@ current scope.
 The dashboard reflects device check-ins, rather than continuous activity. Open OTA stores client
 IDs, platform and runtime versions, channels, current/embedded/served update IDs, check-in timestamps,
 country and city when available, and update failure reports. Check and asset events are also written
-to Analytics Engine. These records live in your Cloudflare account.
+to Analytics Engine. These records live in your Cloudflare account. Asset events carry the bytes
+served, which is where the per-update delivery counts in the dashboard come from.
 
 Failure information depends on what `expo-updates` reports on subsequent checks. It is not a complete
 crash-reporting service. Analytics Engine events are collected, but historical time-series charts

@@ -25,6 +25,19 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm audit --audit-level high
+      # The bsdiff engine is Rust compiled to WebAssembly. Its pinned toolchain
+      # comes from packages/bsdiff/crate/rust-toolchain.toml.
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.98.1
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: packages/bsdiff/crate
+      # The committed module must be what the crate builds.
+      - run: pnpm --filter @open-ota/bsdiff build:wasm
+      - run: git diff --exit-code -- packages/bsdiff/bsdiff.wasm
+      # Conformance tests hand our patches to the reference bspatch.
       - run: sudo apt-get update && sudo apt-get install -y bsdiff
       - run: pnpm check
       - run: pnpm --filter dashboard lint

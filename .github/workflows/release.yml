@@ -39,7 +39,9 @@ jobs:
             exit 1
           fi
 
-      # Patch tests need bspatch, which ships in the bsdiff package.
+      # Patch tests need bspatch, which ships in the bsdiff package. The
+      # WebAssembly engine is committed, so no Rust toolchain is needed here;
+      # the build bundles it into dist/ with its module alongside.
       - run: sudo apt-get update && sudo apt-get install -y bsdiff
       - run: pnpm --filter open-ota check
       - run: pnpm --filter open-ota test
