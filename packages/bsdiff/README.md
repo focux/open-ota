@@ -32,8 +32,11 @@ Failures throw `BsdiffError` with a `code`: `too-large`, `corrupt-patch`,
 
 ## Building the module
 
-`bsdiff.wasm` is committed. To rebuild it after changing `crate/`, install Rust
-(`rustup` picks up the pinned toolchain from `crate/rust-toolchain.toml`) and run:
+`bsdiff.wasm` is committed and reproducible: the build remaps source and
+registry paths, so the pinned toolchain produces the same bytes on any machine,
+and CI checks the committed file against a fresh build. To rebuild it after
+changing `crate/`, install Rust (`rustup` picks up the pinned toolchain from
+`crate/rust-toolchain.toml`) and run:
 
 ```sh
 pnpm --filter @open-ota/bsdiff build:wasm

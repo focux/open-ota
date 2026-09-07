@@ -30,7 +30,7 @@
     "node": ">=20"
   },
   "scripts": {
-    "build:wasm": "cargo build --release --target wasm32-unknown-unknown --manifest-path crate/Cargo.toml && cp crate/target/wasm32-unknown-unknown/release/open_ota_bsdiff.wasm bsdiff.wasm",
+    "build:wasm": "sh ./build-wasm.sh",
     "build": "rm -rf dist && tsc -p tsconfig.build.json",
     "prepare": "tsc -p tsconfig.build.json",
     "prepublishOnly": "pnpm build",
