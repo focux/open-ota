@@ -7,10 +7,16 @@ export const BranchName = Schema.String.check(Schema.isPattern(/^[a-z0-9][a-z0-9
 export const Percent = Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 100 }));
 const NonEmpty = Schema.String.check(Schema.isNonEmpty());
 
+// base64url SHA-256 of the bytes, which is also the R2 key.
+export const AssetHash = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_-]{43}$/));
+export const UpdateId = Schema.String.check(
+  Schema.isPattern(/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i),
+);
+
 // One file of an export: `hash` addresses the bytes in R2, `key` is the id the
 // client stores it under (Expo's md5 of the file).
 export const StoredAsset = Schema.Struct({
-  hash: Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_-]{43}$/)),
+  hash: AssetHash,
   key: NonEmpty,
   contentType: NonEmpty,
   fileExtension: Schema.optionalKey(Schema.String),
@@ -75,6 +81,15 @@ export const PublishGroupInput = Schema.Struct({
   }),
 });
 export type PublishGroupInput = typeof PublishGroupInput.Type;
+
+// The JS a store build ships with, registered so fresh installs can be patched.
+export const EmbeddedUpdateInput = Schema.Struct({
+  updateId: UpdateId,
+  platform: Platform,
+  runtimeVersion: NonEmpty,
+  launchAsset: StoredAsset,
+});
+export type EmbeddedUpdateInput = typeof EmbeddedUpdateInput.Type;
 
 export interface PublishedGroup {
   readonly groupId: string;

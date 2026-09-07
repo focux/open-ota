@@ -1,10 +1,17 @@
 import { Effect, Schema } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
+import { AssetStore } from "./assets.ts";
+import { Delivery } from "./delivery.ts";
 import { NotFound } from "./errors.ts";
+import { Retention, sweep } from "./gc.ts";
 import { bearer, badRequestOn, handle } from "./http.ts";
 import { BranchName, Percent, Platform, type PublishGroupInput } from "./model.ts";
+import { PatchPolicy, wireSize } from "./patching.ts";
 import { PublishAuth } from "./routes.ts";
 import { UpdateStore, bundleInput, republishInput, type RollbackTarget } from "./store.ts";
+
+// Delivery numbers cover this many days.
+const deliveryDays = 7;
 
 const Name = Schema.Struct({ name: BranchName });
 const Id = Schema.Struct({ id: Schema.String });
@@ -46,7 +53,16 @@ export const adminRoutes = HttpRouter.use(
   Effect.fn("Admin.routes")(function* (router) {
     const store = yield* UpdateStore;
     const auth = yield* PublishAuth;
+    const delivery = yield* Delivery;
+    const policy = yield* PatchPolicy;
+    const assets = yield* AssetStore;
+    const retention = yield* Retention;
     const authorized = bearer(auth.token);
+    const runSweep = sweep().pipe(
+      Effect.provideService(UpdateStore, store),
+      Effect.provideService(AssetStore, assets),
+      Effect.provideService(Retention, retention),
+    );
     const body = <A, I, RD>(schema: Schema.ConstraintCodec<A, I, RD, unknown>) =>
       HttpServerRequest.schemaBodyJson(schema).pipe(badRequestOn("Invalid request body."));
     const json = (value: unknown, status = 200) => HttpServerResponse.jsonUnsafe(value, { status });
@@ -109,6 +125,47 @@ export const adminRoutes = HttpRouter.use(
           })(),
         ),
       ),
+    );
+
+    // The patches computed toward one update's bundle, and how that bundle has
+    // been going out to devices.
+    yield* router.add(
+      "GET",
+      "/admin/updates/:id/patches",
+      handle(
+        authorized(
+          Effect.fn("Admin.updatePatches")(function* () {
+            const { id } = yield* HttpRouter.schemaPathParams(Id).pipe(badRequestOn("Invalid update id."));
+            const update = yield* store.updateById(id);
+            if (update === null || update.kind !== "bundle") return yield* Effect.fail(new NotFound({ message: "Unknown update." }));
+            const hash = update.launchAsset.hash;
+            const info = yield* store.assetInfo(hash);
+            const [patches, stats] = yield* Effect.all([store.patchesToward(hash), delivery.assetDelivery(hash, deliveryDays)]);
+            const wire = info === null ? null : wireSize(info);
+            return json({
+              updateId: update.id,
+              launchAsset: {
+                hash,
+                size: info?.size ?? null,
+                compressedSize: info?.compressedSize ?? null,
+                wireSize: wire,
+                // Null once a sweep has removed the bundle.
+                present: info !== null,
+              },
+              maxRatio: policy.maxRatio,
+              patches: patches.map((patch) => ({ ...patch, ratio: wire === null || wire === 0 ? null : patch.size / wire })),
+              delivery: stats,
+            });
+          })(),
+        ),
+      ),
+    );
+
+    // Runs the retention sweep now instead of waiting for the nightly trigger.
+    yield* router.add(
+      "POST",
+      "/admin/gc",
+      handle(authorized(runSweep.pipe(Effect.map((result) => json(result)), Effect.withSpan("Admin.gc")))),
     );
 
     yield* router.add(

@@ -1,13 +1,14 @@
 import type { RuntimeContext } from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
-import { Context, Effect, Schema } from "effect";
+import { Context, DateTime, Effect, Schema } from "effect";
 import { Headers, HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 import { AssetStore } from "./assets.ts";
-import { sha256Base64Url } from "./crypto.ts";
-import { BadRequest, NotFound } from "./errors.ts";
+import { base64UrlToHex, sha256Base64Url } from "./crypto.ts";
+import { BadRequest, NotFound, StorageError } from "./errors.ts";
 import { bearer, badRequestOn, handle } from "./http.ts";
 import { Metrics } from "./metrics.ts";
-import { Platform, PublishGroupInput } from "./model.ts";
+import { AssetHash, BranchName, EmbeddedUpdateInput, Platform, PublishGroupInput } from "./model.ts";
+import { PatchEngine, PatchPolicy, gzipSize, patchDecision } from "./patching.ts";
 import {
   ManifestHeaders,
   decide,
@@ -24,15 +25,35 @@ export class PublishAuth extends Context.Service<PublishAuth, { readonly token: 
 ) {}
 
 const HashParam = Schema.Struct({ hash: Schema.String });
-const PatchParams = Schema.Struct({ base: Schema.String, target: Schema.String });
+const StrictHashParam = Schema.Struct({ hash: AssetHash });
+const PatchParams = Schema.Struct({ base: AssetHash, target: AssetHash });
+const Runtime = Schema.String.check(Schema.isNonEmpty());
 const BundlesQuery = Schema.Struct({
   name: Schema.String,
   platform: Platform,
-  runtime: Schema.String.check(Schema.isNonEmpty()),
+  runtime: Runtime,
   limit: Schema.optional(Schema.NumberFromString.check(Schema.isInt(), Schema.isBetween({ minimum: 1, maximum: 10 }))),
+});
+const PatchBasesQuery = Schema.Struct({
+  name: BranchName,
+  platform: Platform,
+  runtime: Runtime,
+  // The bundle about to be published; it is never its own base.
+  target: AssetHash,
+  limit: Schema.optional(Schema.NumberFromString.check(Schema.isInt(), Schema.isBetween({ minimum: 1, maximum: 12 }))),
 });
 const MissingInput = Schema.Struct({ hashes: Schema.Array(Schema.String) });
 const encoder = new TextEncoder();
+
+// Devices in the field are counted from check-ins this recent.
+const fleetWindowDays = 30;
+
+// Full bundles never change, so they are cached for a year. Serving one to a
+// device that asked for a patch is the one answer that can change, once a
+// patch for its base lands, so that answer is held briefly.
+const immutable = "public, max-age=31536000, immutable";
+const untilPatchExists = "public, max-age=300";
+const negotiationVary = "A-IM, Expo-Current-Update-ID";
 
 export const routes = HttpRouter.use(
   Effect.fn("Updates.routes")(function* (router) {
@@ -41,6 +62,8 @@ export const routes = HttpRouter.use(
     const metrics = yield* Metrics;
     const signer = yield* Signer;
     const auth = yield* PublishAuth;
+    const engine = yield* PatchEngine;
+    const policy = yield* PatchPolicy;
 
     // Bookkeeping runs after the response is sent and never fails the request.
     const afterResponse = Effect.fn("Updates.afterResponse")(function* <E>(...work: ReadonlyArray<Effect.Effect<void, E, RuntimeContext>>) {
@@ -53,6 +76,7 @@ export const routes = HttpRouter.use(
     });
 
     const authorized = bearer(auth.token);
+    const json = (value: unknown, status = 200) => HttpServerResponse.jsonUnsafe(value, { status });
 
     const jsonPart = (name: string, value: unknown): Part => ({
       name,
@@ -163,11 +187,12 @@ export const routes = HttpRouter.use(
         return match !== null && (match[1] === undefined || Number(match[1]) > 0);
       }) ?? false;
       const baseUpdateId = headers["expo-current-update-id"]?.toLowerCase();
-      if (!offered || baseUpdateId === undefined) return null;
+      if (!offered || baseUpdateId === undefined || baseUpdateId === "") return { negotiated: false as const, patch: null };
       const baseHash = yield* store.launchAssetHash(baseUpdateId);
-      if (baseHash === null || !(yield* store.hasPatch(baseHash, hash))) return null;
+      const size = baseHash === null ? null : yield* store.patchSize(baseHash, hash);
+      if (baseHash === null || size === null) return { negotiated: true as const, patch: null };
       const body = yield* assets.get(`patches/${baseHash}/${hash}`);
-      return body === null ? null : { body, baseUpdateId };
+      return { negotiated: true as const, patch: body === null ? null : { body, baseUpdateId, size } };
     });
 
     const asset = handle(
@@ -175,37 +200,42 @@ export const routes = HttpRouter.use(
         const { hash } = yield* HttpRouter.schemaPathParams(HashParam).pipe(badRequestOn("Invalid asset hash."));
         const request = yield* HttpServerRequest.HttpServerRequest;
         const clientId = request.headers["eas-client-id"];
-        const patch = yield* patchFor(request.headers, hash).pipe(
+        const negotiation = yield* patchFor(request.headers, hash).pipe(
           Effect.catchTag("StorageError", (error) => Effect.logWarning("Patch unavailable, serving full asset", { cause: error }).pipe(
-            Effect.as(null),
+            Effect.as({ negotiated: true as const, patch: null }),
           )),
         );
-        if (patch !== null) {
-          yield* afterResponse(metrics.record({ event: "asset", clientId, hash, outcome: "patch" }));
-          return HttpServerResponse.stream(patch.body, {
+        if (negotiation.patch !== null) {
+          const { body, baseUpdateId, size } = negotiation.patch;
+          yield* afterResponse(metrics.record({ event: "asset", clientId, hash, outcome: "patch", bytes: size }));
+          // A patch is fixed by (target, base update), which is exactly what
+          // the cache key varies on, so it is as immutable as the bundle.
+          return HttpServerResponse.stream(body, {
             status: 226,
             contentType: "application/octet-stream",
             headers: {
               im: "bsdiff",
-              "expo-base-update-id": patch.baseUpdateId,
-              "cache-control": "private, max-age=0",
+              "expo-base-update-id": baseUpdateId,
+              "cache-control": immutable,
+              "cache-tag": "asset, patch",
+              vary: negotiationVary,
             },
           });
         }
-        const contentType = yield* store.assetContentType(hash);
-        const body = contentType === null ? null : yield* assets.get(`assets/${hash}`);
-        if (contentType === null || body === null) {
+        const info = yield* store.assetInfo(hash);
+        const body = info === null ? null : yield* assets.get(`assets/${hash}`);
+        if (info === null || body === null) {
           return yield* Effect.fail(new NotFound({ message: "Unknown asset." }));
         }
-        yield* afterResponse(metrics.record({ event: "asset", clientId, hash, outcome: "full" }));
+        yield* afterResponse(metrics.record({ event: "asset", clientId, hash, outcome: "full", bytes: info.size }));
         // Workers Cache keys on Vary: a cached full bundle must not shadow a
         // patch for devices that offer bsdiff from a different base.
         return HttpServerResponse.stream(body, {
-          contentType,
+          contentType: info.contentType,
           headers: {
-            "cache-control": "public, max-age=31536000, immutable",
+            "cache-control": negotiation.negotiated ? untilPatchExists : immutable,
             "cache-tag": "asset",
-            vary: "A-IM, Expo-Current-Update-ID",
+            vary: negotiationVary,
           },
         });
       })(),
@@ -217,7 +247,12 @@ export const routes = HttpRouter.use(
           const { hashes } = yield* HttpServerRequest.schemaBodyJson(MissingInput).pipe(
             badRequestOn("Expected a JSON body with a list of hashes."),
           );
-          return HttpServerResponse.jsonUnsafe({ missing: yield* store.missingAssets(hashes) });
+          const missing = yield* store.missingAssets(hashes);
+          // A publish that learns an asset is present will reference it shortly;
+          // the sweep must not take it in between.
+          const absent = new Set(missing);
+          yield* store.touchAssets(hashes.filter((hash) => !absent.has(hash)));
+          return json({ missing });
         })(),
       ),
     );
@@ -225,16 +260,36 @@ export const routes = HttpRouter.use(
     const putAsset = handle(
       authorized(
         Effect.fn("Updates.putAsset")(function* () {
-          const { hash } = yield* HttpRouter.schemaPathParams(HashParam).pipe(badRequestOn("Invalid asset hash."));
+          const { hash } = yield* HttpRouter.schemaPathParams(StrictHashParam).pipe(badRequestOn("Invalid asset hash."));
           const request = yield* HttpServerRequest.HttpServerRequest;
-          const bytes = new Uint8Array(yield* request.arrayBuffer.pipe(badRequestOn("Could not read the body.")));
-          if ((yield* sha256Base64Url(bytes)) !== hash) {
-            return yield* Effect.fail(new BadRequest({ message: "The body does not match the hash." }));
-          }
           const contentType = request.headers["content-type"] ?? "application/octet-stream";
-          yield* assets.put(`assets/${hash}`, bytes, contentType);
-          yield* store.insertAsset({ hash, contentType, size: bytes.length });
-          return HttpServerResponse.jsonUnsafe({ hash, size: bytes.length });
+          const web = yield* HttpServerRequest.toWeb(request).pipe(badRequestOn("Invalid request."));
+          const declared = Number(request.headers["content-length"]);
+          const key = `assets/${hash}`;
+          const checksum = base64UrlToHex(hash);
+          let size: number;
+          let compressedSize: number;
+          if (web.body !== null && Number.isInteger(declared) && declared >= 0) {
+            // The body goes straight into R2, which checks the hash as it lands,
+            // while its twin is gzipped to learn what the asset costs over the wire.
+            const [stored, measured] = web.body.tee();
+            const [, compressed] = yield* Effect.all(
+              [assets.put(key, { stream: stored, size: declared }, { contentType, sha256: checksum }), gzipSize(measured)],
+              { concurrency: 2 },
+            );
+            size = declared;
+            compressedSize = compressed;
+          } else {
+            const bytes = new Uint8Array(yield* request.arrayBuffer.pipe(badRequestOn("Could not read the body.")));
+            if ((yield* sha256Base64Url(bytes)) !== hash) {
+              return yield* Effect.fail(new BadRequest({ message: "The body does not match the hash." }));
+            }
+            yield* assets.put(key, { bytes }, { contentType, sha256: checksum });
+            size = bytes.length;
+            compressedSize = yield* gzipSize(bytes);
+          }
+          yield* store.insertAsset({ hash, contentType, size, compressedSize });
+          return json({ hash, size, compressedSize });
         })(),
       ),
     );
@@ -249,7 +304,27 @@ export const routes = HttpRouter.use(
             runtimeVersion: query.runtime,
             limit: query.limit ?? 3,
           });
-          return HttpServerResponse.jsonUnsafe({ bundles });
+          return json({ bundles });
+        })(),
+      ),
+    );
+
+    // The bundles worth diffing a new one against: what devices on the branch
+    // run today, what fresh installs start from, and what was published last.
+    const patchBases = handle(
+      authorized(
+        Effect.fn("Updates.patchBases")(function* () {
+          const query = yield* HttpRouter.schemaParams(PatchBasesQuery).pipe(badRequestOn("Invalid patch base query."));
+          const now = yield* DateTime.now;
+          const bases = yield* store.patchBases({
+            branch: query.name,
+            platform: query.platform,
+            runtimeVersion: query.runtime,
+            exclude: query.target,
+            limit: query.limit ?? 8,
+            fleetSince: DateTime.formatIso(DateTime.subtract(now, { days: fleetWindowDays })),
+          });
+          return json({ bases, maxRatio: policy.maxRatio, maxBundleBytes: policy.maxBundleBytes });
         })(),
       ),
     );
@@ -260,15 +335,67 @@ export const routes = HttpRouter.use(
           const { base, target } = yield* HttpRouter.schemaPathParams(PatchParams).pipe(
             badRequestOn("Invalid patch hashes."),
           );
-          const missing = yield* store.missingAssets([...new Set([base, target])]);
-          if (missing.length > 0) {
-            return yield* Effect.fail(new BadRequest({ message: `Assets not uploaded: ${missing.join(", ")}` }));
+          const [baseInfo, targetInfo] = yield* Effect.all([store.assetInfo(base), store.assetInfo(target)]);
+          const missing = [
+            ...(baseInfo === null ? [base] : []),
+            ...(targetInfo === null || target === base ? [] : []),
+            ...(targetInfo === null ? [target] : []),
+          ];
+          if (baseInfo === null || targetInfo === null) {
+            return yield* Effect.fail(new BadRequest({ message: `Assets not uploaded: ${[...new Set(missing)].join(", ")}` }));
           }
           const request = yield* HttpServerRequest.HttpServerRequest;
           const bytes = new Uint8Array(yield* request.arrayBuffer.pipe(badRequestOn("Could not read the body.")));
-          yield* assets.put(`patches/${base}/${target}`, bytes, "application/octet-stream");
+          const decision = patchDecision(policy, targetInfo, baseInfo, bytes.length);
+          if (!decision.stored) {
+            return json({
+              stored: false,
+              reason: decision.reason,
+              baseHash: base,
+              targetHash: target,
+              size: bytes.length,
+              wireSize: decision.wireSize,
+              ratio: decision.ratio,
+              maxRatio: policy.maxRatio,
+            });
+          }
+          // The trust boundary: the patch is applied here, with the same
+          // algorithm the device runs, and must rebuild the target exactly.
+          const baseBytes = yield* assets.getBytes(`assets/${base}`);
+          if (baseBytes === null) {
+            return yield* Effect.fail(new StorageError({ message: "The base bundle is missing from storage." }));
+          }
+          const rebuilt = yield* engine.apply(baseBytes, bytes);
+          if ((yield* sha256Base64Url(rebuilt as Uint8Array<ArrayBuffer>)) !== target) {
+            return yield* Effect.fail(new BadRequest({ message: "The patch does not rebuild the target bundle." }));
+          }
+          yield* assets.put(`patches/${base}/${target}`, { bytes }, { contentType: "application/octet-stream" });
           yield* store.insertPatch({ baseHash: base, targetHash: target, size: bytes.length });
-          return HttpServerResponse.jsonUnsafe({ baseHash: base, targetHash: target, size: bytes.length });
+          return json({
+            stored: true,
+            baseHash: base,
+            targetHash: target,
+            size: bytes.length,
+            wireSize: decision.wireSize,
+            ratio: decision.ratio,
+          });
+        })(),
+      ),
+    );
+
+    const registerEmbedded = handle(
+      authorized(
+        Effect.fn("Updates.registerEmbedded")(function* () {
+          const input = yield* HttpServerRequest.schemaBodyJson(EmbeddedUpdateInput).pipe(
+            Effect.mapError((error) => new BadRequest({ message: `Invalid embedded update: ${error.message}` })),
+          );
+          yield* store.insertEmbedded({
+            updateId: input.updateId.toLowerCase(),
+            platform: input.platform,
+            runtimeVersion: input.runtimeVersion,
+            launchAssetHash: input.launchAsset.hash,
+          });
+          return json({ updateId: input.updateId.toLowerCase() }, 201);
         })(),
       ),
     );
@@ -280,7 +407,7 @@ export const routes = HttpRouter.use(
             Effect.mapError((error) => new BadRequest({ message: `Invalid publish request: ${error.message}` })),
           );
           const group = yield* store.publishGroup(input);
-          return HttpServerResponse.jsonUnsafe(group, { status: 201 });
+          return json(group, 201);
         })(),
       ),
     );
@@ -291,7 +418,9 @@ export const routes = HttpRouter.use(
     yield* router.add("POST", "/publish/assets/missing", missingAssets);
     yield* router.add("PUT", "/publish/assets/:hash", putAsset);
     yield* router.add("GET", "/publish/branches/:name/bundles", branchBundles);
+    yield* router.add("GET", "/publish/branches/:name/patch-bases", patchBases);
     yield* router.add("PUT", "/publish/patches/:base/:target", putPatch);
+    yield* router.add("POST", "/publish/embedded", registerEmbedded);
     yield* router.add("POST", "/publish/groups", publishGroup);
   }),
 );

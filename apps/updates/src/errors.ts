@@ -26,11 +26,32 @@ export class CryptoError extends Schema.TaggedError<CryptoError>()("CryptoError"
   cause: Schema.optional(Schema.Unknown),
 }) {}
 
-export type UpdatesError = BadRequest | Conflict | Unauthorized | NotFound | StorageError | CryptoError;
+// An uploaded body whose bytes do not hash to the address it was sent to.
+export class ChecksumMismatch extends Schema.TaggedError<ChecksumMismatch>()("ChecksumMismatch", {
+  message: Schema.String,
+}) {}
+
+// A patch the engine refused: not BSDIFF40, truncated, or too large to apply.
+export class PatchError extends Schema.TaggedError<PatchError>()("PatchError", {
+  message: Schema.String,
+  code: Schema.String,
+}) {}
+
+export type UpdatesError =
+  | BadRequest
+  | Conflict
+  | Unauthorized
+  | NotFound
+  | StorageError
+  | CryptoError
+  | ChecksumMismatch
+  | PatchError;
 
 export const httpStatus = (error: UpdatesError): number => {
   switch (error._tag) {
     case "BadRequest":
+    case "ChecksumMismatch":
+    case "PatchError":
       return 400;
     case "Conflict":
       return 409;

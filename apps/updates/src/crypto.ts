@@ -19,3 +19,14 @@ export const sha256Base64Url = Effect.fn("Crypto.sha256Base64Url")((bytes: Uint8
     ),
   ),
 );
+
+// R2 verifies uploads against a hex digest; Expo addresses assets in base64url.
+export const base64UrlToHex = (value: string): string => {
+  const padded = value.replace(/-/g, "+").replace(/_/g, "/") + "=".repeat((4 - (value.length % 4)) % 4);
+  const binary = atob(padded);
+  let hex = "";
+  for (let index = 0; index < binary.length; index++) {
+    hex += binary.charCodeAt(index).toString(16).padStart(2, "0");
+  }
+  return hex;
+};

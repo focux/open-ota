@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@effect/sql-d1": "catalog:",
+    "@open-ota/bsdiff": "workspace:*",
     "alchemy": "catalog:",
     "effect": "catalog:"
   },

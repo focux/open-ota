@@ -29,7 +29,7 @@ describe.each(stores)("store contract over %s", (_, layer) => {
   const seed = Effect.gen(function* () {
     const store = yield* UpdateStore;
     for (const hash of ["A".repeat(43), "B".repeat(43)]) {
-      yield* store.insertAsset({ hash, contentType: "application/javascript", size: 1 });
+      yield* store.insertAsset({ hash, contentType: "application/javascript", size: 1, compressedSize: null });
     }
     return store;
   });
@@ -151,8 +151,8 @@ describe.each(stores)("store contract over %s", (_, layer) => {
       Effect.gen(function* () {
         const store = yield* UpdateStore;
         const read = store.assetContentType("hash");
-        yield* store.insertAsset({ hash: "hash", contentType: "first", size: 1 });
-        yield* store.insertAsset({ hash: "hash", contentType: "second", size: 1 });
+        yield* store.insertAsset({ hash: "hash", contentType: "first", size: 1, compressedSize: null });
+        yield* store.insertAsset({ hash: "hash", contentType: "second", size: 1, compressedSize: null });
         expect(yield* read).toBe("first");
       }),
     ));

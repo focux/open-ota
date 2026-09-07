@@ -24,6 +24,8 @@ export interface AssetEvent {
   readonly clientId: string | undefined;
   readonly hash: string;
   readonly outcome: "full" | "patch";
+  // What went over the wire before edge compression: the bundle or the patch.
+  readonly bytes: number;
 }
 
 export type MetricEvent = CheckEvent | AssetEvent;
@@ -53,7 +55,7 @@ export class Metrics extends Context.Service<Metrics, MetricsShape>()("expo-ota/
                     event.city ?? "",
                   ]
                 : [event.event, event.hash, event.outcome],
-            doubles: [1],
+            doubles: event.event === "asset" ? [1, event.bytes] : [1],
           })
           .pipe(Effect.catch((error) => Effect.logWarning("Metric dropped", { cause: error }))),
       ),

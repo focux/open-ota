@@ -10,16 +10,23 @@ import failuresMigration from "../migrations/0004_failures.sql?raw";
 import geoMigration from "../migrations/0005_geo.sql?raw";
 import actorMigration from "../migrations/0006_actor.sql?raw";
 import patchesMigration from "../migrations/0003_patches.sql?raw";
+import deliveryMigration from "../migrations/0007_delivery.sql?raw";
+import { loadBsdiff } from "@open-ota/bsdiff/node";
 import { adminRoutes } from "./admin.ts";
 import { AssetStore } from "./assets.ts";
+import { Delivery } from "./delivery.ts";
+import { Retention, type RetentionPolicy } from "./gc.ts";
 import { Metrics, type MetricEvent } from "./metrics.ts";
 import { noStoreByDefault } from "./http.ts";
+import { PatchEngine, PatchPolicy, type PatchPolicyShape } from "./patching.ts";
 import { PublishAuth, routes } from "./routes.ts";
 import { Signer } from "./signing.ts";
 import { UpdateStore } from "./store.ts";
 
 export const token = "publish-token";
 export const origin = "https://updates.test";
+
+export const bsdiff = await loadBsdiff();
 
 export const keys = await crypto.subtle.generateKey(
   { name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" },
@@ -31,7 +38,7 @@ export const sqliteDatabase = () => {
   const migrated = Layer.effectDiscard(
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
-      for (const statement of `${initMigration}${devicesMigration}${patchesMigration}${failuresMigration}${geoMigration}${actorMigration}`.split(";").map((s: string) => s.trim()).filter(Boolean)) {
+      for (const statement of `${initMigration}${devicesMigration}${patchesMigration}${failuresMigration}${geoMigration}${actorMigration}${deliveryMigration}`.split(";").map((s: string) => s.trim()).filter(Boolean)) {
         yield* sql.unsafe(statement);
       }
     }),
@@ -55,8 +62,11 @@ const inlineExecutionContext = Layer.succeed(Cloudflare.Workers.WorkerExecutionC
 export const makeServer = (
   store: () => Layer.Layer<UpdateStore, never, never>,
   assets: Layer.Layer<AssetStore> = AssetStore.memory(),
+  options: { readonly policy?: Partial<PatchPolicyShape>; readonly retention?: Partial<RetentionPolicy> } = {},
 ) => {
   const events: Array<MetricEvent> = [];
+  // Shared by reference so a test can change the sweep's window mid-run.
+  const retention: { -readonly [K in keyof RetentionPolicy]: RetentionPolicy[K] } = { ...Retention.defaults, ...options.retention };
   const server = HttpRouter.toWebHandler(
     Layer.mergeAll(routes, adminRoutes).pipe(
       Layer.provide(noStoreByDefault),
@@ -69,6 +79,10 @@ export const makeServer = (
           Metrics.memory(events),
           Signer.fromKey(keys.privateKey, "main"),
           Layer.succeed(PublishAuth, { token }),
+          PatchEngine.fromBsdiff(bsdiff),
+          Layer.succeed(PatchPolicy, { ...PatchPolicy.defaults, ...options.policy }),
+          Layer.succeed(Retention, retention),
+          Delivery.disabled,
         ),
       ),
     ),
@@ -90,7 +104,7 @@ export const makeServer = (
         ...headers,
       },
     });
-  return { dispose: server.dispose, request, authed, post, manifest, events };
+  return { dispose: server.dispose, request, authed, post, manifest, events, retention };
 };
 
 export async function parseMultipart(response: Response) {
