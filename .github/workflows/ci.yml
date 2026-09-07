@@ -34,9 +34,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: packages/bsdiff/crate
-      # The committed module must be what the crate builds.
+      # The crate must build for wasm32. The committed module is what ships;
+      # builds are not byte-identical across hosts, so it is not diffed here.
       - run: pnpm --filter @open-ota/bsdiff build:wasm
-      - run: git diff --exit-code -- packages/bsdiff/bsdiff.wasm
+      - run: git checkout -- packages/bsdiff/bsdiff.wasm
       # Conformance tests hand our patches to the reference bspatch.
       - run: sudo apt-get update && sudo apt-get install -y bsdiff
       - run: pnpm check

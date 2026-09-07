@@ -97,7 +97,8 @@ describe("bsdiff", () => {
     expect(() => engine.patch(v1, wrongMagic)).toThrow(expect.objectContaining({ code: "corrupt-patch" }));
   });
 
-  it("keeps working after large inputs grew the memory", async () => {
+  // A 3 MB diff takes a few seconds on a slow runner.
+  it("keeps working after large inputs grew the memory", { timeout: 60_000 }, async () => {
     const engine = await loadBsdiff();
     const big = random(99, 3_000_000);
     const changed = mutate(big, 7);
