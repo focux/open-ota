@@ -43,9 +43,9 @@ open-ota publish --branch <name> [--message <text>] [--rollout <0-100>]
                  [--platform ios] [--platform android] [--skip-export] [--dist <dir>]
                  [--no-patches] [--project <dir>] [--server <url>] [--token <token>]
 open-ota rollback-to-embedded --branch <name> [--platform ios|android] [--message <text>]
-open-ota register-embedded --platform ios|android --manifest <app.manifest> --bundle <bundle>
-                           [--runtime <version>] [--project <dir>]
 open-ota patches --branch <name> [--platform ios|android] [--project <dir>]
+open-ota register-embedded --platform ios|android --manifest <app.manifest> --bundle <bundle>
+                           [--runtime <version>] [--project <dir>]   (experimental)
 open-ota --help
 ```
 
@@ -68,8 +68,20 @@ the server's configured share of the compressed bundle (30% by default); the ser
 rule and rebuilds the bundle from the patch before storing it. Skipped and declined patches are
 reported with `--verbose`; a failure is a warning and the update still publishes.
 
-A fresh install runs the JavaScript embedded in its build, so register each store build once and
-the server can patch from it. The files come from the built artifact, not from `expo export`:
+`open-ota patches --branch production` computes the patches the newest bundle on the branch is
+missing, from every base the server reports, skipping bases already covered. Run it after the fleet
+moved on or after a publish with `--no-patches`.
+
+### Experimental: patching fresh installs
+
+A fresh install runs the JavaScript embedded in its build. The `expo-updates` client offers a patch
+against that bundle like any other, but the server can only answer if it holds the bundle's bytes,
+and nothing uploads them on its own. `register-embedded` fills the gap by registering a build's
+bundle under the update id in its manifest. It is implemented and tested against the server, but it
+has not been verified on a device yet, so treat it as an experiment and watch a fresh install's
+first update in the dashboard's patches panel before relying on it.
+
+The files come from the built artifact, not from `expo export`:
 
 ```sh
 # iOS: the .app produced by the archive
@@ -78,12 +90,10 @@ open-ota register-embedded --platform ios \
 # Android: unzip the APK or AAB first
 open-ota register-embedded --platform android \
   --manifest apk/assets/app.manifest --bundle apk/assets/index.android.bundle
+open-ota patches --branch production
 ```
 
-The update id comes from the manifest, the runtime from `--runtime` or from the project. Then
-`open-ota patches --branch production` computes the patches the newest bundle on the branch is
-missing, from every base the server reports, skipping bases already covered. Run it after
-registering a build, after the fleet moved on, or after a publish with `--no-patches`.
+The update id comes from the manifest, the runtime from `--runtime` or from the project.
 
 ## Set up and check an app
 

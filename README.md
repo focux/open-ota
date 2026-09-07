@@ -239,9 +239,8 @@ anything is off.
 
 **Which bases get a patch.** On publish, the CLI asks the server which bundles are worth diffing
 against, and the server answers from what it knows: the bundles devices on the branch reported
-running in the last 30 days, most devices first; the JavaScript embedded in store builds that were
-registered with `open-ota register-embedded`; and the most recent publishes. Up to eight distinct
-bundles per platform, and the newest bundle never patches against itself.
+running in the last 30 days, most devices first, then the most recent publishes. Up to eight
+distinct bundles per platform, and the newest bundle never patches against itself.
 
 **When a patch is kept.** The launch asset is JavaScript, which Cloudflare compresses at the edge,
 so a patch competes with the gzipped bundle, not the raw one. The server measures the compressed
@@ -252,25 +251,18 @@ CLI applies the same rule before uploading. Bundles above `OTA_PATCH_MAX_BUNDLE_
 applies it again with the same engine and refuses to store anything that does not rebuild the
 target bundle byte for byte. Devices verify the manifest hash as always.
 
-**Fresh installs.** A device that has never taken an update runs the bundle baked into its build,
-and that is the most common base in most fleets. Register each store build once and the server can
-patch from it:
-
-```sh
-# iOS: inside the built .app; Android: inside the APK or AAB (unzip it first)
-npx open-ota register-embedded --platform ios \
-  --manifest build/YourApp.app/app.manifest --bundle build/YourApp.app/main.jsbundle
-npx open-ota register-embedded --platform android \
-  --manifest apk/assets/app.manifest --bundle apk/assets/index.android.bundle
-npx open-ota patches --branch production
-```
+**Experimental: fresh installs.** A device that has never taken an update runs the bundle baked
+into its build. The `expo-updates` client will apply a patch against it, but the server only can if
+it holds that bundle, and this has not been verified on devices yet. `open-ota register-embedded`
+makes the server aware of a build's bundle; see the
+[CLI reference](packages/cli/README.md#experimental-patching-fresh-installs) before relying on it.
 
 **Retention.** A sweep runs nightly (`17 3 * * *` UTC) and can be run from the dashboard API with
 `POST /admin/gc`. It deletes bundles, assets and patches that nothing retained references. Retained
 means: the newest `OTA_RETAIN_GROUPS` groups on each branch, any group younger than
 `OTA_RETAIN_DAYS`, any update a device reported running or receiving within `OTA_RETAIN_DEVICE_DAYS`,
-any active rollout, every registered embedded bundle, and anything uploaded or checked in the last
-day, since a publish may still be in flight. An update whose bundle was swept stays in the history
+any active rollout, any bundle registered with the experimental `register-embedded`, and anything
+uploaded or checked in the last day, since a publish may still be in flight. An update whose bundle was swept stays in the history
 but is no longer offered as a rollback target.
 
 **Visibility.** Each update in the dashboard lists the patches stored toward its bundle, which

@@ -216,7 +216,7 @@ export const makeCommand = <E, R>(handle: (input: CommandInput) => Effect.Effect
     }),
   ).pipe(
     Command.withDescription(
-      "Register the JS embedded in a store build so fresh installs receive delta patches instead of full bundles",
+      "Experimental: register the JS embedded in a store build so fresh installs can receive delta patches instead of full bundles",
     ),
     Command.withExamples([
       {
