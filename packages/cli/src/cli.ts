@@ -10,7 +10,8 @@ import { doctor } from "./doctor.ts";
 import { initialize } from "./setup.ts";
 import { Processes } from "./expo.ts";
 import { Progress } from "./output.ts";
-import { publish, rollbackToEmbedded } from "./publish.ts";
+import { Differ } from "./patches.ts";
+import { backfillPatches, publish, registerEmbedded, rollbackToEmbedded } from "./publish.ts";
 import { Server } from "./server.ts";
 
 const execute = Effect.fn("cli.execute")(function* (args: CommandInput) {
@@ -42,6 +43,32 @@ const execute = Effect.fn("cli.execute")(function* (args: CommandInput) {
       });
       if (args.json) yield* Console.log(JSON.stringify(result));
       else if (result.mode === "snippet") yield* Console.log(JSON.stringify(result.config, null, 2));
+      return;
+    }
+    if (args.command === "register-embedded") {
+      const result = yield* registerEmbedded({
+        projectDir,
+        platform: args.platform,
+        manifestPath: path.resolve(projectDir, args.manifest),
+        bundlePath: path.resolve(projectDir, args.bundle),
+        runtimeVersion: args.runtime,
+      });
+      yield* progress.close;
+      if (args.json) yield* Console.log(JSON.stringify({ command: args.command, server: args.url, ...result }));
+      else {
+        yield* progress.report({ type: "info", message: "" });
+        yield* progress.report({
+          type: "info",
+          message: `Registered ${result.platform} build ${result.updateId} (runtime ${result.runtimeVersion}). Run open-ota patches --branch <name> to add patches from it, or publish normally.`,
+        });
+      }
+      return;
+    }
+    if (args.command === "patches") {
+      yield* progress.report({ type: "info", message: `Branch: ${args.branch} | Platforms: ${args.platforms.join(", ")}` });
+      const result = yield* backfillPatches({ branch: args.branch, platforms: args.platforms, projectDir });
+      yield* progress.close;
+      if (args.json) yield* Console.log(JSON.stringify({ command: args.command, server: args.url, branch: args.branch, ...result }));
       return;
     }
     if (args.command === "publish")
@@ -120,7 +147,7 @@ const execute = Effect.fn("cli.execute")(function* (args: CommandInput) {
 
 const handle = Effect.fn("cli.handle")((args: CommandInput) =>
   execute(args).pipe(
-    Effect.provide(Layer.mergeAll(Processes.layer, Server.layer(args.url, args.token))),
+    Effect.provide(Layer.mergeAll(Processes.layer, Differ.layer, Server.layer(args.url, args.token))),
     Effect.provide(
       Progress.layer({
         write: (text) => process.stderr.write(text.replaceAll(Redacted.value(args.token), "[redacted]")),

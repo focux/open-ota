@@ -88,8 +88,34 @@ const publishFlags = {
   ),
   noPatches: Flag.boolean("no-patches").pipe(
     Flag.withDefault(false),
-    Flag.withDescription("Skip optional delta patches after publishing"),
+    Flag.withDescription("Publish without delta patches; `open-ota patches` can add them later"),
   ),
+};
+const embeddedFlags = {
+  url: common.url,
+  token: common.token,
+  project: common.project,
+  verbose: common.verbose,
+  json: common.json,
+  platform: Flag.choice("platform", ["ios", "android"]).pipe(Flag.withDescription("Platform of the build")),
+  manifest: Flag.string("manifest").pipe(
+    Flag.withDescription("Path to the app.manifest expo-updates generated for the build"),
+  ),
+  bundle: Flag.string("bundle").pipe(Flag.withDescription("Path to the JS bundle embedded in the build")),
+  runtime: Flag.string("runtime").pipe(
+    Flag.withDescription("Runtime version of the build; defaults to resolving it from the project"),
+    Flag.optional,
+    Flag.map(Option.getOrUndefined),
+  ),
+};
+const patchesFlags = {
+  branch: common.branch,
+  platforms: common.platforms,
+  project: common.project,
+  url: common.url,
+  token: common.token,
+  verbose: common.verbose,
+  json: common.json,
 };
 
 const connection = {
@@ -125,7 +151,9 @@ export type CommandInput =
   | (FlagValues<typeof publishFlags> & { command: "publish" })
   | (FlagValues<typeof common> & { command: "rollback-to-embedded" })
   | (FlagValues<typeof doctorFlags> & { command: "doctor" })
-  | (FlagValues<typeof initFlags> & { command: "init" });
+  | (FlagValues<typeof initFlags> & { command: "init" })
+  | (FlagValues<typeof embeddedFlags> & { command: "register-embedded" })
+  | (FlagValues<typeof patchesFlags> & { command: "patches" });
 
 export const makeCommand = <E, R>(handle: (input: CommandInput) => Effect.Effect<void, E, R>) => {
   const publish = Command.make(
@@ -180,8 +208,40 @@ export const makeCommand = <E, R>(handle: (input: CommandInput) => Effect.Effect
       "Configure app.json with a backup, or generate a snippet for dynamic config; requires expo-updates and the public signing certificate",
     ),
   );
+  const registerEmbedded = Command.make(
+    "register-embedded",
+    embeddedFlags,
+    Effect.fn("cli.registerEmbedded")(function* (input) {
+      yield* handle({ ...input, command: "register-embedded" });
+    }),
+  ).pipe(
+    Command.withDescription(
+      "Register the JS embedded in a store build so fresh installs receive delta patches instead of full bundles",
+    ),
+    Command.withExamples([
+      {
+        command:
+          "open-ota register-embedded --platform ios --manifest build/YourApp.app/app.manifest --bundle build/YourApp.app/main.jsbundle",
+        description: "Register an iOS build after archiving it",
+      },
+    ]),
+  );
+  const patches = Command.make(
+    "patches",
+    patchesFlags,
+    Effect.fn("cli.patches")(function* (input) {
+      yield* handle({ ...input, command: "patches" });
+    }),
+  ).pipe(
+    Command.withDescription(
+      "Compute the delta patches the newest bundle on a branch is missing, for bases the server reports: devices in the field, registered builds, recent publishes",
+    ),
+    Command.withExamples([
+      { command: "open-ota patches --branch production", description: "Backfill patches after registering a build" },
+    ]),
+  );
   return Command.make("open-ota").pipe(
     Command.withDescription("Publish Expo updates to a self-hosted Open OTA server"),
-    Command.withSubcommands([publish, rollback, doctor, init]),
+    Command.withSubcommands([publish, rollback, doctor, init, registerEmbedded, patches]),
   );
 };

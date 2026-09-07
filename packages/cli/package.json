@@ -8,7 +8,12 @@
     "url": "https://github.com/focux/open-ota",
     "directory": "packages/cli"
   },
-  "keywords": ["expo", "expo-updates", "ota", "cloudflare"],
+  "keywords": [
+    "expo",
+    "expo-updates",
+    "ota",
+    "cloudflare"
+  ],
   "type": "module",
   "bin": {
     "open-ota": "./dist/cli.js"
@@ -23,15 +28,17 @@
     "access": "public"
   },
   "scripts": {
-    "build": "rm -rf dist && tsc -p tsconfig.build.json",
+    "build": "rm -rf dist && node build.mjs",
     "prepublishOnly": "pnpm build",
     "check": "tsc -p tsconfig.json",
     "test": "vitest run"
   },
   "devDependencies": {
     "@types/node": "^22",
+    "esbuild": "^0.28.2",
     "typescript": "5.9.3",
-    "vitest": "^4.1.11"
+    "vitest": "^4.1.11",
+    "@open-ota/bsdiff": "workspace:*"
   },
   "dependencies": {
     "@effect/platform-node": "catalog:",

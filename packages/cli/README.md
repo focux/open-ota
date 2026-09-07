@@ -16,10 +16,11 @@ npx open-ota publish --branch staging --message "Fix payment sheet"
 ```
 
 It checks configuration, credentials, signing, and active rollouts before exporting both platforms.
-It resolves each platform's runtime version, uploads missing assets, optionally builds bsdiff
-patches against up to three distinct previous bundles, and then publishes the update group. Patches
-go first so no device can fetch the new bundle before its patch exists. `bsdiff` must be on PATH;
-otherwise patches are skipped with a warning.
+It resolves each platform's runtime version, uploads missing assets, computes bsdiff patches
+against the bundles the server ranks as worth it (what devices run, registered builds, recent
+publishes), verifies each one, and then publishes the update group. Patches go first so no device
+can fetch the new bundle before its patch exists. The engine ships with the CLI as WebAssembly;
+nothing needs to be installed.
 
 ## Credentials
 
@@ -42,6 +43,9 @@ open-ota publish --branch <name> [--message <text>] [--rollout <0-100>]
                  [--platform ios] [--platform android] [--skip-export] [--dist <dir>]
                  [--no-patches] [--project <dir>] [--server <url>] [--token <token>]
 open-ota rollback-to-embedded --branch <name> [--platform ios|android] [--message <text>]
+open-ota register-embedded --platform ios|android --manifest <app.manifest> --bundle <bundle>
+                           [--runtime <version>] [--project <dir>]
+open-ota patches --branch <name> [--platform ios|android] [--project <dir>]
 open-ota --help
 ```
 
@@ -55,6 +59,31 @@ the runtime versions resolved from this project back to the JS baked into their 
 versions are unaffected. Publish-only flags such as `--rollout` are rejected for rollback.
 
 Requires Node 20 or newer and the Expo CLI of the app it runs in.
+
+## Delta patches
+
+`publish` asks the server for the bundles worth diffing the new one against, diffs each, checks
+that the patch rebuilds the new bundle, and uploads it. A patch is only uploaded when it is at most
+the server's configured share of the compressed bundle (30% by default); the server checks the same
+rule and rebuilds the bundle from the patch before storing it. Skipped and declined patches are
+reported with `--verbose`; a failure is a warning and the update still publishes.
+
+A fresh install runs the JavaScript embedded in its build, so register each store build once and
+the server can patch from it. The files come from the built artifact, not from `expo export`:
+
+```sh
+# iOS: the .app produced by the archive
+open-ota register-embedded --platform ios \
+  --manifest build/YourApp.app/app.manifest --bundle build/YourApp.app/main.jsbundle
+# Android: unzip the APK or AAB first
+open-ota register-embedded --platform android \
+  --manifest apk/assets/app.manifest --bundle apk/assets/index.android.bundle
+```
+
+The update id comes from the manifest, the runtime from `--runtime` or from the project. Then
+`open-ota patches --branch production` computes the patches the newest bundle on the branch is
+missing, from every base the server reports, skipping bases already covered. Run it after
+registering a build, after the fleet moved on, or after a publish with `--no-patches`.
 
 ## Set up and check an app
 
@@ -95,8 +124,8 @@ CI, redirected output, `TERM=dumb`, and `--verbose` use plain progress lines. Se
 disable colors. Progress, warnings, and the human-readable summary go to stderr.
 
 Use `--verbose` to stream subprocess output and show individual patch diagnostics. Patch failures
-are warnings: the update still publishes and devices can download full bundles. Install `bsdiff`
-on PATH to generate patches, or pass `--no-patches` to skip them.
+are warnings: the update still publishes and devices can download full bundles. Pass
+`--no-patches` to skip them and `open-ota patches` to add them later.
 
 Use `--json` to write one result object to stdout for scripts:
 

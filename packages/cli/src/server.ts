@@ -7,12 +7,43 @@ const PublishedGroup = Schema.Struct({
   updates: Schema.Array(Schema.Struct({ id: Schema.String, platform: Schema.String, runtimeVersion: Schema.String })),
 });
 export type PublishedGroup = typeof PublishedGroup.Type;
+const AssetHash = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_-]{43}$/));
 const Bundles = Schema.Struct({
-  bundles: Schema.Array(Schema.Struct({
-    updateId: Schema.String,
-    hash: Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_-]{43}$/)),
-  })),
+  bundles: Schema.Array(Schema.Struct({ updateId: Schema.String, hash: AssetHash })),
 });
+const PatchBases = Schema.Struct({
+  bases: Schema.Array(
+    Schema.Struct({
+      hash: AssetHash,
+      source: Schema.Literals(["fleet", "embedded", "recent"]),
+      updateId: Schema.NullOr(Schema.String),
+      devices: Schema.Number,
+    }),
+  ),
+  maxRatio: Schema.Number,
+  maxBundleBytes: Schema.Number,
+});
+export type PatchBases = typeof PatchBases.Type;
+const PatchUpload = Schema.Union([
+  Schema.Struct({ stored: Schema.Literals([true]), size: Schema.Number, wireSize: Schema.Number, ratio: Schema.Number }),
+  Schema.Struct({
+    stored: Schema.Literals([false]),
+    reason: Schema.String,
+    size: Schema.Number,
+    wireSize: Schema.Number,
+    ratio: Schema.Number,
+  }),
+]);
+export type PatchUpload = typeof PatchUpload.Type;
+const UpdatePatches = Schema.Struct({
+  patches: Schema.Array(Schema.Struct({ baseHash: AssetHash, size: Schema.Number })),
+});
+export interface EmbeddedInput {
+  readonly updateId: string;
+  readonly platform: string;
+  readonly runtimeVersion: string;
+  readonly launchAsset: { hash: string; key: string; contentType: string; fileExtension: string };
+}
 
 const Overview = Schema.Struct({
   channels: Schema.Array(Schema.Struct({ name: Schema.String, branch: Schema.String })),
@@ -56,7 +87,10 @@ export class Server extends Context.Service<
       limit: number,
     ): Effect.Effect<typeof Bundles.Type.bundles, CliFailure>;
     downloadAsset(hash: string): Effect.Effect<Uint8Array, CliFailure>;
-    uploadPatch(base: string, target: string, bytes: Uint8Array): Effect.Effect<void, CliFailure>;
+    patchBases(branch: string, platform: string, runtimeVersion: string, target: string): Effect.Effect<PatchBases, CliFailure>;
+    uploadPatch(base: string, target: string, bytes: Uint8Array): Effect.Effect<PatchUpload, CliFailure>;
+    updatePatches(updateId: string): Effect.Effect<ReadonlyArray<string>, CliFailure>;
+    registerEmbedded(input: EmbeddedInput): Effect.Effect<{ updateId: string }, CliFailure>;
   }
 >()("cli/Server") {
   static readonly layer = (url: string, token: Redacted.Redacted<string>) =>
@@ -157,11 +191,33 @@ export class Server extends Context.Service<
             const response = yield* request(HttpClientRequest.get(`/assets/${hash}`));
             return new Uint8Array(yield* response.arrayBuffer.pipe(Effect.mapError(invalidResponse)));
           }),
+          patchBases: Effect.fn("server.patchBases")(function* (branch, platform, runtimeVersion, target) {
+            const response = yield* request(
+              HttpClientRequest.get(`/publish/branches/${encodeURIComponent(branch)}/patch-bases`).pipe(
+                HttpClientRequest.setUrlParams({ platform, runtime: runtimeVersion, target }),
+              ),
+            );
+            return yield* HttpClientResponse.schemaBodyJson(PatchBases)(response).pipe(Effect.mapError(invalidResponse));
+          }),
           uploadPatch: Effect.fn("server.uploadPatch")(function* (base, target, bytes) {
-            yield* request(
+            const response = yield* request(
               HttpClientRequest.put(`/publish/patches/${base}/${target}`).pipe(
                 HttpClientRequest.bodyUint8Array(bytes, "application/octet-stream"),
               ),
+            );
+            return yield* HttpClientResponse.schemaBodyJson(PatchUpload)(response).pipe(Effect.mapError(invalidResponse));
+          }),
+          updatePatches: Effect.fn("server.updatePatches")(function* (updateId) {
+            const response = yield* request(HttpClientRequest.get(`/admin/updates/${encodeURIComponent(updateId)}/patches`));
+            const body = yield* HttpClientResponse.schemaBodyJson(UpdatePatches)(response).pipe(Effect.mapError(invalidResponse));
+            return body.patches.map((patch) => patch.baseHash);
+          }),
+          registerEmbedded: Effect.fn("server.registerEmbedded")(function* (input) {
+            const response = yield* request(
+              HttpClientRequest.post("/publish/embedded").pipe(HttpClientRequest.bodyJsonUnsafe(input)),
+            );
+            return yield* HttpClientResponse.schemaBodyJson(Schema.Struct({ updateId: Schema.String }))(response).pipe(
+              Effect.mapError(invalidResponse),
             );
           }),
         });

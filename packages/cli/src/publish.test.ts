@@ -1,15 +1,16 @@
 import { createHash } from "node:crypto";
-import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { NodeServices } from "@effect/platform-node";
+import { loadBsdiff } from "@open-ota/bsdiff/node";
 import { Effect, Layer, Redacted } from "effect";
 import { FetchHttpClient } from "effect/unstable/http";
 import { Processes } from "./expo.ts";
-import { ProcessFailure } from "./errors.ts";
+import { CliFailure, ProcessFailure } from "./errors.ts";
 import { Progress, type Report } from "./output.ts";
+import { Differ } from "./patches.ts";
 type Run = (command: string, args: ReadonlyArray<string>, cwd: string) => Promise<string>;
 interface TestServer {
   url: string;
@@ -17,8 +18,12 @@ interface TestServer {
   fetch: typeof fetch;
 }
 import {
+  backfillPatches as backfillEffect,
   publish as publishEffect,
+  registerEmbedded as registerEffect,
   rollbackToEmbedded as rollbackEffect,
+  type BackfillOptions,
+  type EmbeddedOptions,
   type PublishOptions,
   type RollbackOptions,
 } from "./publish.ts";
@@ -75,12 +80,27 @@ interface Call {
   url: string;
   contentType: string | undefined;
   body: string;
+  bytes: Uint8Array | undefined;
+}
+
+interface Base {
+  hash: string;
+  source: "fleet" | "embedded" | "recent";
+  updateId: string | null;
+  devices: number;
 }
 
 interface ServerOptions {
   group?: { status: number; body: string };
   // Newest launch assets the branch already has, per platform, and their bytes.
   bundles?: Record<string, ReadonlyArray<{ updateId: string; hash: string }>>;
+  // What the server ranks as worth diffing against, per platform.
+  bases?: Record<string, ReadonlyArray<Base>>;
+  maxRatio?: number;
+  maxBundleBytes?: number;
+  // Bases that already have a patch toward the newest bundle.
+  covered?: ReadonlyArray<string>;
+  decline?: string;
   contents?: Record<string, string>;
 }
 
@@ -90,11 +110,13 @@ const makeServer = (missing: ReadonlyArray<string>, options: ServerOptions = {})
     const url = String(input);
     const headers = (init?.headers ?? {}) as Record<string, string>;
     const body = init?.body;
+    const bytes = body === undefined || typeof body === "string" ? undefined : new Uint8Array(body as Uint8Array);
     calls.push({
       method: init?.method ?? "GET",
       url,
       contentType: headers["content-type"],
-      body: body === undefined ? "" : typeof body === "string" ? body : Buffer.from(body as Uint8Array).toString(),
+      body: body === undefined ? "" : typeof body === "string" ? body : Buffer.from(bytes!).toString(),
+      bytes,
     });
     if (url.endsWith("/publish/assets/missing")) {
       return Response.json({ missing });
@@ -102,12 +124,32 @@ const makeServer = (missing: ReadonlyArray<string>, options: ServerOptions = {})
     if (url.includes("/publish/assets/")) {
       return Response.json({ ok: true });
     }
+    if (url.includes("/patch-bases")) {
+      const platform = new URL(url).searchParams.get("platform") ?? "";
+      return Response.json({
+        bases: options.bases?.[platform] ?? [],
+        maxRatio: options.maxRatio ?? 100,
+        maxBundleBytes: options.maxBundleBytes ?? 32 * 1024 * 1024,
+      });
+    }
     if (url.includes("/publish/branches/")) {
       const platform = new URL(url).searchParams.get("platform") ?? "";
       return Response.json({ bundles: options.bundles?.[platform] ?? [] });
     }
     if (url.includes("/publish/patches/")) {
-      return Response.json({ ok: true });
+      const size = bytes?.length ?? 0;
+      return Response.json(
+        options.decline === undefined
+          ? { stored: true, size, wireSize: 100, ratio: size / 100 }
+          : { stored: false, reason: options.decline, size, wireSize: 100, ratio: size / 100, maxRatio: 0.3 },
+      );
+    }
+    if (url.includes("/admin/updates/")) {
+      return Response.json({ patches: (options.covered ?? []).map((baseHash) => ({ baseHash, size: 1 })) });
+    }
+    if (url.endsWith("/publish/embedded")) {
+      const text = bytes === undefined ? (body as string) : Buffer.from(bytes).toString();
+      return Response.json({ updateId: (JSON.parse(text) as { updateId: string }).updateId.toLowerCase() }, { status: 201 });
     }
     if (url.endsWith("/publish/groups")) {
       if (options.group !== undefined) {
@@ -142,13 +184,14 @@ const options = (distDir: string, server: TestServer) => ({
   report: () => {},
 });
 
-type TestOptions = { server: TestServer; run: Run; report: Report };
+type TestOptions = { server: TestServer; run: Run; report: Report; differ?: Layer.Layer<Differ> };
 const runWith = <A, E>(
-  program: Effect.Effect<A, E, Server | Processes | Progress | import("effect").FileSystem.FileSystem>,
+  program: Effect.Effect<A, E, Server | Processes | Progress | Differ | import("effect").FileSystem.FileSystem>,
   options: TestOptions,
 ) =>
   Effect.runPromise(
     program.pipe(
+      Effect.provide(options.differ ?? Differ.layer),
       Effect.provide(
         Server.layer(options.server.url, Redacted.make(options.server.token)).pipe(
           Layer.provide(FetchHttpClient.layer),
@@ -182,6 +225,8 @@ const runWith = <A, E>(
   );
 const publish = (options: PublishOptions & TestOptions) => runWith(publishEffect(options), options);
 const rollbackToEmbedded = (options: RollbackOptions & TestOptions) => runWith(rollbackEffect(options), options);
+const registerEmbedded = (options: EmbeddedOptions & TestOptions) => runWith(registerEffect(options), options);
+const backfillPatches = (options: BackfillOptions & TestOptions) => runWith(backfillEffect(options), options);
 
 const groupBody = (calls: ReadonlyArray<Call>) =>
   JSON.parse(calls.find((call) => call.url.endsWith("/publish/groups"))!.body) as Record<string, any>;
@@ -278,84 +323,44 @@ describe("publish", () => {
   });
 });
 
-interface Diff {
-  command: string;
-  args: ReadonlyArray<string>;
-  cwd: string;
-  base: string;
-  target: string;
-}
-
-// Stands in for the bsdiff binary: records the argv it was given, reads back the
-// two inputs, and writes the patch the CLI then uploads.
-const diffRun =
-  (diffs: Array<Diff>, patch: string | Error): Run =>
-  async (command, args, cwd) => {
-    if (command !== "bsdiff") return fakeRun(command, args, cwd);
-    diffs.push({
-      command,
-      args,
-      cwd,
-      base: await readFile(args[0]!, "utf8"),
-      target: await readFile(args[1]!, "utf8"),
-    });
-    if (patch instanceof Error) throw patch;
-    await writeFile(args[2]!, patch);
-    return "";
-  };
+const bytes = (text: string) => new TextEncoder().encode(text);
+const short = (hash: string) => hash.slice(0, 7);
 
 describe("patches", () => {
-  const patchServer = () =>
+  const older: Base = { hash: sha(olderIosBundle), source: "fleet", updateId: "ios-old", devices: 3 };
+  const patchServer = (options: ServerOptions = {}) =>
     makeServer([], {
-      bundles: {
-        ios: [
-          { updateId: "ios-new", hash: sha(iosBundle) },
-          { updateId: "ios-old", hash: sha(olderIosBundle) },
-        ],
-        android: [{ updateId: "android-new", hash: sha(androidBundle) }],
-      },
+      bases: { ios: [older], android: [] },
       contents: { [sha(olderIosBundle)]: olderIosBundle },
+      ...options,
     });
+  const patchCalls = (calls: ReadonlyArray<Call>) => calls.filter((call) => call.url.includes("/publish/patches/"));
 
-  it("diffs the new bundle against the older ones on the branch and uploads the patches", async () => {
+  it("diffs the new bundle against the bases the server ranks and uploads verified patches first", async () => {
     const dist = await makeDist();
     const { server, calls } = patchServer();
-    const diffs: Array<Diff> = [];
     const logs: Array<string> = [];
 
-    await publish({
-      ...options(dist, server),
-      run: diffRun(diffs, "patch bytes"),
-      report: (event) => logs.push(event.message),
-    });
+    await publish({ ...options(dist, server), report: (event) => logs.push(event.message) });
 
-    expect(calls.filter((call) => call.url.includes("/publish/branches/")).map((call) => call.url)).toEqual([
-      "https://ota.test/publish/branches/staging/bundles?platform=ios&runtime=rt-ios&limit=4",
-      "https://ota.test/publish/branches/staging/bundles?platform=android&runtime=rt-android&limit=4",
+    expect(calls.filter((call) => call.url.includes("/patch-bases")).map((call) => call.url)).toEqual([
+      `https://ota.test/publish/branches/staging/patch-bases?platform=ios&runtime=rt-ios&target=${sha(iosBundle)}`,
+      `https://ota.test/publish/branches/staging/patch-bases?platform=android&runtime=rt-android&target=${sha(androidBundle)}`,
     ]);
     expect(calls.filter((call) => call.url.startsWith("https://ota.test/assets/")).map((call) => call.url)).toEqual([
       `https://ota.test/assets/${sha(olderIosBundle)}`,
     ]);
 
-    expect(diffs).toHaveLength(1);
-    const diff = diffs[0]!;
-    expect(diff.args).toHaveLength(3);
-    expect(diff.args.map((arg) => path.dirname(arg))).toEqual([diff.cwd, diff.cwd, diff.cwd]);
-    expect(diff.args.map((arg) => path.basename(arg))).toEqual([
-      "base.bundle",
-      "target.bundle",
-      "delta.patch",
-    ]);
-    expect(diff.base).toBe(olderIosBundle);
-    expect(diff.target).toBe(iosBundle);
-    expect(existsSync(diff.cwd)).toBe(false);
-
-    const put = calls.find((call) => call.url.includes("/publish/patches/"))!;
-    expect(put.method).toBe("PUT");
-    expect(put.url).toBe(`https://ota.test/publish/patches/${sha(olderIosBundle)}/${sha(iosBundle)}`);
-    expect(put.contentType).toBe("application/octet-stream");
-    expect(put.body).toBe("patch bytes");
-    expect(logs).toContain(`ios: patch ${sha(olderIosBundle).slice(0, 7)} to ${sha(iosBundle).slice(0, 7)}, 11 bytes`);
+    const [put] = patchCalls(calls);
+    expect(put?.method).toBe("PUT");
+    expect(put?.url).toBe(`https://ota.test/publish/patches/${sha(olderIosBundle)}/${sha(iosBundle)}`);
+    expect(put?.contentType).toBe("application/octet-stream");
+    // The uploaded bytes are a real BSDIFF40 patch that rebuilds the new bundle.
+    const engine = await loadBsdiff();
+    expect(Buffer.from(put!.bytes!.subarray(0, 8)).toString()).toBe("BSDIFF40");
+    expect(Buffer.from(engine.patch(bytes(olderIosBundle), put!.bytes!)).toString()).toBe(iosBundle);
+    expect(logs.some((line) => line.startsWith(`ios: patch ${short(sha(olderIosBundle))} to ${short(sha(iosBundle))}, ${put!.bytes!.length} bytes`) && line.endsWith("(3 devices run it)"))).toBe(true);
+    expect(logs).toContain("Delta patches: 1 uploaded, 0 skipped, 0 failed");
 
     // No device can ask for the new bundle until the group exists, so the patch
     // must already be on the server by then.
@@ -365,111 +370,242 @@ describe("patches", () => {
     expect(groupIndex).toBeGreaterThan(patchIndex);
   });
 
-  it("warns and keeps the publish when bsdiff fails", async () => {
+  it("warns and keeps the publish when the engine fails", async () => {
     const dist = await makeDist();
     const { server, calls } = patchServer();
-    const diffs: Array<Diff> = [];
     const logs: Array<string> = [];
-
-    const published = await publish({
-      ...options(dist, server),
-      run: diffRun(diffs, new Error("bsdiff: command not found")),
-      report: (event) => logs.push(event.message),
+    const broken = Layer.succeed(Differ, {
+      diff: () => Effect.fail(new CliFailure({ message: "bsdiff failed: engine exploded" })),
+      patch: () => Effect.fail(new CliFailure({ message: "unreachable" })),
     });
 
+    const published = await publish({ ...options(dist, server), differ: broken, report: (event) => logs.push(event.message) });
+
     expect(published.groupId).toBe("group-1");
-    expect(calls.some((call) => call.url.includes("/publish/patches/"))).toBe(false);
-    expect(logs).toContain(`Patch from ${sha(olderIosBundle).slice(0, 7)} failed: bsdiff: command not found`);
+    expect(patchCalls(calls)).toHaveLength(0);
+    expect(logs).toContain(`Patch from ${short(sha(olderIosBundle))} failed: bsdiff failed: engine exploded`);
+    expect(logs).toContain("Delta patches: 0 uploaded, 0 skipped, 1 failed");
+  });
+
+  it("never uploads a patch that does not rebuild the bundle locally", async () => {
+    const dist = await makeDist();
+    const { server, calls } = patchServer();
+    const logs: Array<string> = [];
+    const lying = Layer.succeed(Differ, {
+      diff: () => Effect.succeed(bytes("BSDIFF40 but wrong")),
+      patch: () => Effect.succeed(bytes("not the target")),
+    });
+
+    await publish({ ...options(dist, server), differ: lying, report: (event) => logs.push(event.message) });
+
+    expect(patchCalls(calls)).toHaveLength(0);
+    expect(logs).toContain(`Patch from ${short(sha(olderIosBundle))} failed: the patch does not rebuild the target bundle`);
   });
 
   it.each(["../../outside", "/tmp/outside", "..\\outside", "not-a-hash"])(
-    "rejects an unsafe server bundle hash %j before downloading or writing it",
+    "rejects an unsafe server base hash %j before downloading it",
     async (hash) => {
       const dist = await makeDist();
-      const { server, calls } = makeServer([], {
-        bundles: { ios: [{ updateId: "old", hash }] },
-      });
-      const diffs: Array<Diff> = [];
+      const { server, calls } = makeServer([], { bases: { ios: [{ ...older, hash }] } });
       const logs: Array<string> = [];
-      const published = await publish({
-        ...options(dist, server),
-        run: diffRun(diffs, "patch"),
-        report: (event) => logs.push(event.message),
-      });
+      const published = await publish({ ...options(dist, server), report: (event) => logs.push(event.message) });
       expect(published.groupId).toBe("group-1");
-      expect(diffs).toHaveLength(0);
       expect(calls.some((call) => new URL(call.url).pathname.startsWith("/assets/"))).toBe(false);
       expect(logs.some((message) => message.includes("Invalid response"))).toBe(true);
     },
   );
 
-  it("patches all three prior bundles before publishing the new one", async () => {
+  it("patches every base the server lists before publishing the new bundle", async () => {
     const dist = await makeDist();
-    const older = ["older one", "older two", "older three"];
-    const { server } = makeServer([], {
-      bundles: {
-        ios: [
-          { updateId: "new", hash: sha(iosBundle) },
-          ...older.map((content, index) => ({ updateId: `old-${index}`, hash: sha(content) })),
-        ],
-      },
-      contents: Object.fromEntries(older.map((content) => [sha(content), content])),
-    });
-    const diffs: Array<Diff> = [];
-
-    await publish({ ...options(dist, server), run: diffRun(diffs, "patch") });
-
-    expect(diffs.map((diff) => diff.base)).toEqual(older);
-    expect(diffs.every((diff) => !existsSync(diff.cwd))).toBe(true);
-  });
-
-  it("diffs republished copies of the same bundle only once", async () => {
-    const dist = await makeDist();
+    const contents = ["older one", "older two", "older three"];
     const { server, calls } = makeServer([], {
-      bundles: {
+      bases: {
         ios: [
-          { updateId: "new", hash: sha(iosBundle) },
-          { updateId: "republished", hash: sha(olderIosBundle) },
-          { updateId: "original", hash: sha(olderIosBundle) },
+          { hash: sha(contents[0]!), source: "fleet", updateId: "a", devices: 9 },
+          { hash: sha(contents[1]!), source: "embedded", updateId: "b", devices: 0 },
+          { hash: sha(contents[2]!), source: "recent", updateId: "c", devices: 0 },
         ],
       },
-      contents: { [sha(olderIosBundle)]: olderIosBundle },
+      contents: Object.fromEntries(contents.map((content) => [sha(content), content])),
     });
-    const diffs: Array<Diff> = [];
+    const logs: Array<string> = [];
 
-    await publish({ ...options(dist, server), run: diffRun(diffs, "patch") });
+    await publish({ ...options(dist, server), report: (event) => logs.push(event.message) });
 
-    expect(diffs).toHaveLength(1);
-    expect(calls.filter((call) => call.url.includes("/publish/patches/"))).toHaveLength(1);
+    expect(patchCalls(calls).map((call) => call.url)).toEqual(
+      contents.map((content) => `https://ota.test/publish/patches/${sha(content)}/${sha(iosBundle)}`),
+    );
+    expect(logs.filter((line) => line.startsWith("ios: patch ")).map((line) => line.slice(line.lastIndexOf("(")))).toEqual([
+      "(9 devices run it)",
+      "(embedded in a build)",
+      "(recently published)",
+    ]);
   });
 
-  it.each([iosBundle.length, iosBundle.length + 1])(
-    "skips a %i-byte patch that does not reduce the download",
-    async (size) => {
-      const dist = await makeDist();
-      const { server, calls } = patchServer();
-      const diffs: Array<Diff> = [];
+  it("skips a patch above the server's share of the compressed bundle without uploading it", async () => {
+    const dist = await makeDist();
+    const { server, calls } = patchServer({ maxRatio: 0.01 });
+    const logs: Array<string> = [];
 
-      const published = await publish({
-        ...options(dist, server),
-        run: diffRun(diffs, "x".repeat(size)),
-      });
+    const published = await publish({ ...options(dist, server), report: (event) => logs.push(event.message) });
 
-      expect(published.groupId).toBe("group-1");
-      expect(diffs).toHaveLength(1);
-      expect(calls.some((call) => call.url.includes("/publish/patches/"))).toBe(false);
-      expect(existsSync(diffs[0]!.cwd)).toBe(false);
-    },
-  );
+    expect(published.groupId).toBe("group-1");
+    expect(patchCalls(calls)).toHaveLength(0);
+    expect(logs.some((line) => line.startsWith(`Skipped patch from ${short(sha(olderIosBundle))}:`) && line.includes("over the 1% limit"))).toBe(true);
+    expect(logs).toContain("Delta patches: 0 uploaded, 1 skipped, 0 failed");
+  });
+
+  it("reports a patch the server declined as skipped, not failed", async () => {
+    const dist = await makeDist();
+    const { server, calls } = patchServer({ decline: "too-large" });
+    const logs: Array<string> = [];
+
+    await publish({ ...options(dist, server), report: (event) => logs.push(event.message) });
+
+    expect(patchCalls(calls)).toHaveLength(1);
+    expect(logs.some((line) => line.startsWith(`Server declined patch from ${short(sha(olderIosBundle))}: too-large`))).toBe(true);
+    expect(logs).toContain("Delta patches: 0 uploaded, 1 skipped, 0 failed");
+  });
+
+  it("does not download bases for a bundle above the server's size limit", async () => {
+    const dist = await makeDist();
+    const { server, calls } = patchServer({ maxBundleBytes: 4 });
+    const logs: Array<string> = [];
+
+    await publish({ ...options(dist, server), report: (event) => logs.push(event.message) });
+
+    expect(calls.some((call) => new URL(call.url).pathname.startsWith("/assets/"))).toBe(false);
+    expect(logs).toContain(`ios: bundle is ${iosBundle.length} bytes, above the server's 4-byte patch limit`);
+  });
 
   it("skips patching entirely with --no-patches", async () => {
     const dist = await makeDist();
     const { server, calls } = patchServer();
-    const diffs: Array<Diff> = [];
 
-    await publish({ ...options(dist, server), noPatches: true, run: diffRun(diffs, "patch bytes") });
+    await publish({ ...options(dist, server), noPatches: true });
 
-    expect(calls.some((call) => call.url.includes("/publish/branches/"))).toBe(false);
-    expect(diffs).toEqual([]);
+    expect(calls.some((call) => call.url.includes("/patch-bases"))).toBe(false);
+    expect(patchCalls(calls)).toHaveLength(0);
+  });
+});
+
+describe("register-embedded", () => {
+  it("uploads the build's bundle if needed and registers it under the build's update id", async () => {
+    const dist = await makeDist();
+    const id = "1B4E28BA-2FA1-11D2-883F-B9A761BDE3FB";
+    const manifestPath = path.join(dist, "app.manifest");
+    await writeFile(manifestPath, JSON.stringify({ id, assets: [] }));
+    const { server, calls } = makeServer([sha(iosBundle)]);
+
+    const result = await registerEmbedded({
+      projectDir: dist,
+      platform: "ios",
+      manifestPath,
+      bundlePath: path.join(dist, "_expo/static/js/ios/index.hbc"),
+      runtimeVersion: undefined,
+      server,
+      run: fakeRun,
+      report: () => {},
+    });
+
+    expect(result).toEqual({ updateId: id.toLowerCase(), platform: "ios", runtimeVersion: "rt-ios", hash: sha(iosBundle) });
+    expect(calls.map((call) => [call.method, new URL(call.url).pathname])).toEqual([
+      ["POST", "/publish/assets/missing"],
+      ["PUT", `/publish/assets/${sha(iosBundle)}`],
+      ["POST", "/publish/embedded"],
+    ]);
+    expect(JSON.parse(calls[2]!.body)).toEqual({
+      updateId: id,
+      platform: "ios",
+      runtimeVersion: "rt-ios",
+      launchAsset: { hash: sha(iosBundle), key: md5(iosBundle), contentType: "application/javascript", fileExtension: ".bundle" },
+    });
+  });
+
+  it("takes the runtime from the flag before asking the project", async () => {
+    const dist = await makeDist();
+    const manifestPath = path.join(dist, "app.manifest");
+    await writeFile(manifestPath, JSON.stringify({ id: crypto.randomUUID() }));
+    const { server, calls } = makeServer([]);
+    const runs: Array<string> = [];
+
+    const result = await registerEmbedded({
+      projectDir: dist,
+      platform: "android",
+      manifestPath,
+      bundlePath: path.join(dist, "_expo/static/js/android/index.hbc"),
+      runtimeVersion: "1.2.3",
+      server,
+      run: (command, args, cwd) => {
+        runs.push(args.join(" "));
+        return fakeRun(command, args, cwd);
+      },
+      report: () => {},
+    });
+
+    expect(result.runtimeVersion).toBe("1.2.3");
+    expect(runs).toEqual([]);
+    expect(calls.map((call) => call.method)).toEqual(["POST", "POST"]);
+  });
+
+  it("explains a manifest that is not an embedded update manifest", async () => {
+    const dist = await makeDist();
+    const manifestPath = path.join(dist, "app.manifest");
+    await writeFile(manifestPath, JSON.stringify({ hello: "world" }));
+    const { server } = makeServer([]);
+    await expect(
+      registerEmbedded({
+        projectDir: dist,
+        platform: "ios",
+        manifestPath,
+        bundlePath: path.join(dist, "_expo/static/js/ios/index.hbc"),
+        runtimeVersion: undefined,
+        server,
+        run: fakeRun,
+        report: () => {},
+      }),
+    ).rejects.toThrow("Point --manifest at the app.manifest");
+  });
+});
+
+describe("patches command", () => {
+  it("backfills only the bases the newest bundle is still missing", async () => {
+    const dist = await makeDist();
+    const embeddedBundle = "embedded ios bundle bytes";
+    const { server, calls } = makeServer([], {
+      bundles: { ios: [{ updateId: "ios-new", hash: sha(iosBundle) }], android: [] },
+      bases: {
+        ios: [
+          { hash: sha(olderIosBundle), source: "fleet", updateId: "ios-old", devices: 2 },
+          { hash: sha(embeddedBundle), source: "embedded", updateId: "build", devices: 0 },
+        ],
+      },
+      covered: [sha(olderIosBundle)],
+      contents: { [sha(iosBundle)]: iosBundle, [sha(olderIosBundle)]: olderIosBundle, [sha(embeddedBundle)]: embeddedBundle },
+    });
+    const logs: Array<string> = [];
+
+    const result = await backfillPatches({
+      branch: "staging",
+      platforms: ["ios", "android"],
+      projectDir: dist,
+      server,
+      run: fakeRun,
+      report: (event) => logs.push(event.message),
+    });
+
+    expect(result).toEqual({
+      uploaded: 1,
+      skipped: 0,
+      failed: 0,
+      targets: [{ platform: "ios", runtimeVersion: "rt-ios", hash: sha(iosBundle) }],
+    });
+    expect(calls.filter((call) => call.url.includes("/admin/updates/")).map((call) => call.url)).toEqual([
+      "https://ota.test/admin/updates/ios-new/patches",
+    ]);
+    expect(calls.filter((call) => call.url.includes("/publish/patches/")).map((call) => call.url)).toEqual([
+      `https://ota.test/publish/patches/${sha(embeddedBundle)}/${sha(iosBundle)}`,
+    ]);
+    expect(logs).toContain("android: nothing published on staging for runtime rt-android");
   });
 });

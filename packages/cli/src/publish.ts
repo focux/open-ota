@@ -63,6 +63,28 @@ export interface PublishOptions extends CommonOptions {
 
 export type RollbackOptions = CommonOptions;
 
+export interface EmbeddedOptions {
+  projectDir: string;
+  platform: Platform;
+  // The `app.manifest` expo-updates generated for the build, and its bundle.
+  manifestPath: string;
+  bundlePath: string;
+  runtimeVersion: string | undefined;
+}
+
+export interface BackfillOptions {
+  branch: string;
+  platforms: ReadonlyArray<Platform>;
+  projectDir: string;
+}
+
+const EmbeddedManifest = Schema.fromJsonString(
+  Schema.Struct({
+    id: Schema.String.check(Schema.isPattern(/^[a-f0-9-]{36}$/i)),
+    runtimeVersion: Schema.optionalKey(Schema.String),
+  }),
+);
+
 // Matches Expo's reference server: base64url sha256 addresses the bytes, md5 hex is the client-side key.
 const storeAsset = Effect.fn("publish.storeAsset")(function* (
   file: string,
@@ -212,6 +234,69 @@ export const publish = Effect.fn("publish.publish")(function* (options: PublishO
     expoConfig,
     updates,
   });
+});
+
+// A store build's JS is an update like any other to the devices running it.
+// Registering it lets the server patch fresh installs to the latest update.
+export const registerEmbedded = Effect.fn("publish.registerEmbedded")(function* (options: EmbeddedOptions) {
+  const server = yield* Server;
+  const progress = yield* Progress;
+  const fs = yield* FileSystem.FileSystem;
+  yield* progress.report({ type: "start", message: `Reading the ${options.platform} embedded manifest` });
+  const manifest = yield* fs.readFileString(options.manifestPath).pipe(
+    Effect.flatMap(Schema.decodeUnknownEffect(EmbeddedManifest)),
+    Effect.mapError(
+      (cause) =>
+        new CliFailure({
+          message: `Could not read an embedded update manifest at ${options.manifestPath}. Point --manifest at the app.manifest expo-updates generated for the build.`,
+          cause,
+        }),
+    ),
+  );
+  const runtimeVersion =
+    options.runtimeVersion ?? manifest.runtimeVersion ?? (yield* resolveRuntimeVersion(options.projectDir, options.platform));
+  const uploads = new Map<string, Upload>();
+  const launchAsset = yield* storeAsset(options.bundlePath, "application/javascript", ".bundle", uploads);
+  yield* progress.report({ type: "success", message: `${options.platform}: update ${manifest.id}, runtime ${runtimeVersion}` });
+  const missing = yield* server.missingAssets([launchAsset.hash]);
+  if (missing.length > 0) {
+    yield* progress.report({ type: "start", message: "Uploading the embedded bundle" });
+    yield* uploadMissing(missing, uploads);
+    yield* progress.report({ type: "success", message: "Uploaded the embedded bundle" });
+  }
+  yield* progress.report({ type: "start", message: "Registering the embedded update" });
+  const registered = yield* server.registerEmbedded({
+    updateId: manifest.id,
+    platform: options.platform,
+    runtimeVersion,
+    launchAsset,
+  });
+  yield* progress.report({ type: "success", message: `Registered embedded update ${registered.updateId}` });
+  return { updateId: registered.updateId, platform: options.platform, runtimeVersion, hash: launchAsset.hash };
+});
+
+// Computes the patches the newest bundle on a branch is missing: after a build
+// was registered, after the fleet moved, or after a publish ran with --no-patches.
+export const backfillPatches = Effect.fn("publish.backfillPatches")(function* (options: BackfillOptions) {
+  const server = yield* Server;
+  const progress = yield* Progress;
+  const targets: Array<PatchTarget> = [];
+  const skip = new Set<string>();
+  for (const platform of options.platforms) {
+    yield* progress.report({ type: "start", message: `Resolving the ${platform} runtime and newest bundle` });
+    const runtimeVersion = yield* resolveRuntimeVersion(options.projectDir, platform);
+    const newest = (yield* server.branchBundles(options.branch, platform, runtimeVersion, 1))[0];
+    if (newest === undefined) {
+      yield* progress.report({ type: "info", message: `${platform}: nothing published on ${options.branch} for runtime ${runtimeVersion}` });
+      continue;
+    }
+    for (const covered of yield* server.updatePatches(newest.updateId)) skip.add(covered);
+    const bytes = yield* server.downloadAsset(newest.hash);
+    targets.push({ platform, runtimeVersion, hash: newest.hash, bytes });
+    yield* progress.report({ type: "success", message: `${platform}: runtime ${runtimeVersion}, bundle ${newest.hash.slice(0, 7)}` });
+  }
+  const summary = yield* generatePatches({ branch: options.branch, targets, skip });
+  return { ...summary, targets: targets.map(({ platform, runtimeVersion, hash }) => ({ platform, runtimeVersion, hash })) };
 });
 
 export const rollbackToEmbedded = Effect.fn("publish.rollbackToEmbedded")(function* (options: RollbackOptions) {
