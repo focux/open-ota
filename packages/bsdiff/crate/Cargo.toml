@@ -1,0 +1,23 @@
+[package]
+name = "open-ota-bsdiff"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "BSDIFF40 diff and patch for Open OTA, compiled to WebAssembly"
+license = "MIT"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# Pure Rust on both sides so the crate builds for wasm32-unknown-unknown:
+# divsufsort is a port of Yuta Mori's suffix array, bzip2 defaults to libbz2-rs.
+divsufsort = "2"
+bzip2 = "0.6"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

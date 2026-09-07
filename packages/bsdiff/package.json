@@ -1,0 +1,46 @@
+{
+  "name": "@open-ota/bsdiff",
+  "version": "0.1.0",
+  "description": "BSDIFF40 diff and patch as WebAssembly, for Node and Cloudflare Workers (workspace package, bundled into the CLI)",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/focux/open-ota",
+    "directory": "packages/bsdiff"
+  },
+  "keywords": [
+    "bsdiff",
+    "bspatch",
+    "wasm",
+    "expo-updates"
+  ],
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./node": {
+      "types": "./dist/node.d.ts",
+      "default": "./dist/node.js"
+    },
+    "./bsdiff.wasm": "./bsdiff.wasm"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build:wasm": "cargo build --release --target wasm32-unknown-unknown --manifest-path crate/Cargo.toml && cp crate/target/wasm32-unknown-unknown/release/open_ota_bsdiff.wasm bsdiff.wasm",
+    "build": "rm -rf dist && tsc -p tsconfig.build.json",
+    "prepare": "tsc -p tsconfig.build.json",
+    "prepublishOnly": "pnpm build",
+    "check": "tsc -p tsconfig.json",
+    "test": "cargo test --manifest-path crate/Cargo.toml --quiet && vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "^22",
+    "typescript": "5.9.3",
+    "vitest": "^4.1.11"
+  },
+  "private": true
+}

@@ -1,0 +1,5 @@
+# Pinned so the committed bsdiff.wasm reproduces byte for byte in CI.
+[toolchain]
+channel = "1.98.1"
+targets = ["wasm32-unknown-unknown"]
+profile = "minimal"
