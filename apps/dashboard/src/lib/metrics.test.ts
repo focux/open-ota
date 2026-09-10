@@ -5,6 +5,7 @@ import {
   adoption,
   combineAdoption,
   driftedRuntimes,
+  linkedChannels,
   runtimeVersionCount,
   segmentsFor,
 } from "@/lib/metrics"
@@ -161,6 +162,33 @@ describe("driftedRuntimes", () => {
 describe("runtimeVersionCount", () => {
   it("counts platform and runtime pairs, not channel rows", () => {
     expect(runtimeVersionCount(metrics)).toBe(3)
+  })
+})
+
+describe("linkedChannels", () => {
+  const channels = [
+    { name: "staging", branch: "staging", updatedAt: "2026-09-01T00:00:00Z" },
+    {
+      name: "production",
+      branch: "production",
+      updatedAt: "2026-09-01T00:00:00Z",
+    },
+    { name: "beta", branch: "production", updatedAt: "2026-09-01T00:00:00Z" },
+  ]
+
+  it("names every channel that points at the branch", () => {
+    expect(linkedChannels(channels, "production")).toEqual([
+      "production",
+      "beta",
+    ])
+  })
+
+  it("is empty for a branch nothing points at, so its population is zero", () => {
+    expect(linkedChannels(channels, "early-access")).toEqual([])
+  })
+
+  it("stays undefined while the channels are unknown", () => {
+    expect(linkedChannels(undefined, "production")).toBeUndefined()
   })
 })
 

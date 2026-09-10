@@ -16,6 +16,7 @@ import {
   adoption,
   failuresFor,
   isCurrentGroup,
+  linkedChannels,
   segmentsFor,
 } from "@/lib/metrics"
 import {
@@ -39,6 +40,7 @@ import {
 } from "@/components/metrics"
 import { PageHeader } from "@/components/page-header"
 import { CardSkeleton } from "@/components/page-state"
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Frame, FrameHeader, FramePanel } from "@/components/frame"
@@ -81,6 +83,8 @@ function GroupPage() {
   }
 
   const current = isCurrentGroup(overview.data?.latest ?? [], group.data)
+  // Counts and adoption are read against the devices this branch can reach.
+  const linked = linkedChannels(overview.data?.channels, group.data.branch)
   const failures = failuresFor(metrics.data, group.data.updates)
   const segments = segmentsFor(metrics.data, group.data.updates)
   const config = group.data.updates.find((update) => update.kind === "bundle")
@@ -120,11 +124,23 @@ function GroupPage() {
         }
       />
 
+      {linked !== undefined && linked.length === 0 && (
+        <Alert>
+          <AlertTitle>Not linked to a channel</AlertTitle>
+          <AlertDescription>
+            No channel points at {group.data.branch}, so no device asks for this
+            group and the counts below are zero. Link a channel to the branch to
+            serve it.
+          </AlertDescription>
+        </Alert>
+      )}
+
       {group.data.updates.map((update, index) => (
         <UpdateCard
           key={update.id}
           update={update}
           metrics={metrics.data}
+          channels={linked}
           index={index}
         />
       ))}
@@ -253,13 +269,16 @@ function GroupPage() {
 function UpdateCard({
   update,
   metrics,
+  channels,
   index,
 }: {
   readonly update: Update
   readonly metrics: Metrics | undefined
+  // The channels linked to the group's branch; undefined while unknown.
+  readonly channels: ReadonlyArray<string> | undefined
   readonly index: number
 }) {
-  const numbers = adoption(metrics, update)
+  const numbers = adoption(metrics, update, channels)
 
   return (
     <Frame
