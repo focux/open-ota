@@ -19,28 +19,24 @@ const metrics: Metrics = {
       platform: "ios",
       runtimeVersion: "fp-a",
       devices: 30,
-      elsewhere: 0,
     },
     {
       channel: "production",
       platform: "ios",
       runtimeVersion: "fp-a",
       devices: 10,
-      elsewhere: 0,
     },
     {
       channel: "staging",
       platform: "android",
       runtimeVersion: "fp-b",
       devices: 10,
-      elsewhere: 0,
     },
     {
       channel: "production",
       platform: "ios",
       runtimeVersion: "fp-old",
       devices: 3,
-      elsewhere: 0,
     },
   ],
   updates: [
@@ -155,7 +151,6 @@ describe("driftedRuntimes", () => {
         platform: "ios",
         runtimeVersion: "fp-old",
         devices: 3,
-        elsewhere: 0,
       },
     ])
   })
