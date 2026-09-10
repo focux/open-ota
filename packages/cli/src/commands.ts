@@ -259,7 +259,7 @@ export const makeCommand = <E, R>(handle: (input: CommandInput) => Effect.Effect
     Command.withExamples([
       {
         command:
-          "open-ota build register --platform ios --profile production --manifest build/YourApp.app/app.manifest --bundle build/YourApp.app/main.jsbundle",
+          "open-ota build register --platform ios --profile production --channel production --manifest build/YourApp.app/app.manifest --bundle build/YourApp.app/main.jsbundle",
         description: "Register a submitted iOS production build",
       },
     ]),
@@ -274,8 +274,8 @@ export const makeCommand = <E, R>(handle: (input: CommandInput) => Effect.Effect
     Command.withDescription("Find a compatible registered build"),
     Command.withExamples([
       {
-        command: "open-ota build get --platform ios --profile production --json",
-        description: "Find an iOS production build for the current runtime",
+        command: "open-ota build get --platform ios --profile production --channel production --json",
+        description: "Find an iOS production build on the production channel for the current runtime",
       },
     ]),
   );
