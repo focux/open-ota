@@ -258,15 +258,39 @@ describe.each(stores)("delta patches over the %s store", (_, store) => {
     const embeddedHash = await hashOf(embeddedBundle);
     const embeddedId = uuid().toUpperCase();
     await upload(embeddedHash, embeddedBundle);
-    const registered = await post("/publish/embedded", {
+    const registered = await post("/publish/builds", {
       updateId: embeddedId,
       platform: "ios",
       runtimeVersion: "rt-1",
+      profile: "production",
+      distribution: "store",
+      channel: "production",
       launchAsset: { hash: embeddedHash, key: "embedded", contentType: "application/javascript" },
     });
     expect(registered.status).toBe(201);
-    expect(await registered.json()).toEqual({ updateId: embeddedId.toLowerCase() });
-    expect((await post("/publish/embedded", { updateId: uuid(), platform: "ios", runtimeVersion: "rt-1", launchAsset: { hash: "M".repeat(43), key: "k", contentType: "x" } })).status).toBe(400);
+    const registeredBuild = await registered.json() as { build: Record<string, unknown> };
+    expect(registeredBuild).toEqual({
+      build: {
+        id: expect.any(String),
+        embeddedUpdateId: embeddedId.toLowerCase(),
+        platform: "ios",
+        runtimeVersion: "rt-1",
+        profile: "production",
+        distribution: "store",
+        channel: "production",
+        launchAssetHash: embeddedHash,
+      },
+    });
+    const found = await authed("/publish/builds?platform=ios&runtime=rt-1&profile=production&distribution=store&channel=production");
+    expect(found.status).toBe(200);
+    expect(await found.json()).toEqual(registeredBuild);
+    const wrongProfile = await authed("/publish/builds?platform=ios&runtime=rt-1&profile=preview&distribution=store");
+    expect(wrongProfile.status).toBe(200);
+    expect(await wrongProfile.json()).toEqual({ build: null });
+    expect((await post("/publish/builds", {
+      updateId: uuid(), platform: "ios", runtimeVersion: "rt-1", profile: "production", distribution: "store",
+      launchAsset: { hash: "M".repeat(43), key: "k", contentType: "x" },
+    })).status).toBe(400);
 
     const ranked = await authed(`/publish/branches/staging/patch-bases?platform=ios&runtime=rt-1&target=${targetHash}`);
     const { bases } = (await ranked.json()) as typeof initial;

@@ -82,14 +82,20 @@ export const PublishGroupInput = Schema.Struct({
 });
 export type PublishGroupInput = typeof PublishGroupInput.Type;
 
-// The JS a store build ships with, registered so fresh installs can be patched.
-export const EmbeddedUpdateInput = Schema.Struct({
+export const Distribution = Schema.Literals(["store", "internal", "simulator"]);
+export type Distribution = typeof Distribution.Type;
+
+// A native build and the JS it ships with. The bundle lets fresh installs use patches.
+export const BuildInput = Schema.Struct({
   updateId: UpdateId,
   platform: Platform,
   runtimeVersion: NonEmpty,
+  profile: NonEmpty,
+  distribution: Distribution,
+  channel: Schema.optionalKey(NonEmpty),
   launchAsset: StoredAsset,
 });
-export type EmbeddedUpdateInput = typeof EmbeddedUpdateInput.Type;
+export type BuildInput = typeof BuildInput.Type;
 
 export interface PublishedGroup {
   readonly groupId: string;

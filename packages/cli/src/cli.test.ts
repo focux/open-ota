@@ -116,6 +116,55 @@ it("keeps JSON stdout parseable through a real CLI publish against a local serve
   }
 });
 
+it("returns a registered build through the real nested CLI command", async () => {
+  const build = {
+    id: "build-test",
+    embeddedUpdateId: "embedded-test",
+    platform: "ios",
+    runtimeVersion: "runtime-test",
+    profile: "production",
+    distribution: "store",
+    channel: "production",
+    launchAssetHash: "A".repeat(43),
+  };
+  const server = createServer((req, res) => {
+    res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify({ build }));
+  });
+  try {
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Expected local server port");
+    const { stdout, stderr } = await exec(process.execPath, [
+      cli,
+      "build",
+      "get",
+      "--platform",
+      "ios",
+      "--profile",
+      "production",
+      "--channel",
+      "production",
+      "--runtime",
+      "runtime-test",
+      "--server",
+      `http://127.0.0.1:${address.port}`,
+      "--token",
+      "test-secret",
+      "--json",
+    ], { env: { ...process.env, CI: "1" } });
+    expect(JSON.parse(stdout)).toEqual({
+      command: "build get",
+      server: `http://127.0.0.1:${address.port}`,
+      build,
+    });
+    expect(stderr).not.toContain("test-secret");
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
 it("rejects rollback rollout flags with a nonzero exit before invoking Expo", async () => {
   await expect(
     exec(process.execPath, [cli, "rollback-to-embedded", "--branch", "staging", "--rollout", "10"], {

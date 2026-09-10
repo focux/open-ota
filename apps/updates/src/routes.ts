@@ -7,7 +7,7 @@ import { base64UrlToHex, sha256Base64Url } from "./crypto.ts";
 import { BadRequest, NotFound, StorageError } from "./errors.ts";
 import { bearer, badRequestOn, handle } from "./http.ts";
 import { Metrics } from "./metrics.ts";
-import { AssetHash, BranchName, EmbeddedUpdateInput, Platform, PublishGroupInput } from "./model.ts";
+import { AssetHash, BranchName, BuildInput, Distribution, Platform, PublishGroupInput } from "./model.ts";
 import { PatchEngine, PatchPolicy, gzipSize, patchDecision } from "./patching.ts";
 import {
   ManifestHeaders,
@@ -41,6 +41,13 @@ const PatchBasesQuery = Schema.Struct({
   // The bundle about to be published; it is never its own base.
   target: AssetHash,
   limit: Schema.optional(Schema.NumberFromString.check(Schema.isInt(), Schema.isBetween({ minimum: 1, maximum: 12 }))),
+});
+const BuildQuery = Schema.Struct({
+  platform: Platform,
+  runtime: Runtime,
+  profile: Runtime,
+  distribution: Distribution,
+  channel: Schema.optional(Runtime),
 });
 const MissingInput = Schema.Struct({ hashes: Schema.Array(Schema.String) });
 const encoder = new TextEncoder();
@@ -383,19 +390,39 @@ export const routes = HttpRouter.use(
       ),
     );
 
-    const registerEmbedded = handle(
+    const registerBuild = handle(
       authorized(
-        Effect.fn("Updates.registerEmbedded")(function* () {
-          const input = yield* HttpServerRequest.schemaBodyJson(EmbeddedUpdateInput).pipe(
-            Effect.mapError((error) => new BadRequest({ message: `Invalid embedded update: ${error.message}` })),
+        Effect.fn("Updates.registerBuild")(function* () {
+          const input = yield* HttpServerRequest.schemaBodyJson(BuildInput).pipe(
+            Effect.mapError((error) => new BadRequest({ message: `Invalid build: ${error.message}` })),
           );
-          yield* store.insertEmbedded({
-            updateId: input.updateId.toLowerCase(),
+          const build = {
+            id: crypto.randomUUID(),
+            embeddedUpdateId: input.updateId.toLowerCase(),
             platform: input.platform,
             runtimeVersion: input.runtimeVersion,
+            profile: input.profile,
+            distribution: input.distribution,
+            channel: input.channel,
             launchAssetHash: input.launchAsset.hash,
+          };
+          return json({ build: yield* store.registerBuild(build) }, 201);
+        })(),
+      ),
+    );
+
+    const findBuild = handle(
+      authorized(
+        Effect.fn("Updates.findBuild")(function* () {
+          const query = yield* HttpRouter.schemaParams(BuildQuery).pipe(badRequestOn("Invalid build query."));
+          const build = yield* store.findBuild({
+            platform: query.platform,
+            runtimeVersion: query.runtime,
+            profile: query.profile,
+            distribution: query.distribution,
+            channel: query.channel,
           });
-          return json({ updateId: input.updateId.toLowerCase() }, 201);
+          return json({ build });
         })(),
       ),
     );
@@ -420,7 +447,8 @@ export const routes = HttpRouter.use(
     yield* router.add("GET", "/publish/branches/:name/bundles", branchBundles);
     yield* router.add("GET", "/publish/branches/:name/patch-bases", patchBases);
     yield* router.add("PUT", "/publish/patches/:base/:target", putPatch);
-    yield* router.add("POST", "/publish/embedded", registerEmbedded);
+    yield* router.add("POST", "/publish/builds", registerBuild);
+    yield* router.add("GET", "/publish/builds", findBuild);
     yield* router.add("POST", "/publish/groups", publishGroup);
   }),
 );

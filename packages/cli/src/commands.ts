@@ -91,22 +91,39 @@ const publishFlags = {
     Flag.withDescription("Publish without delta patches; `open-ota patches` can add them later"),
   ),
 };
-const embeddedFlags = {
+const buildFlags = {
   url: common.url,
   token: common.token,
   project: common.project,
   verbose: common.verbose,
   json: common.json,
   platform: Flag.choice("platform", ["ios", "android"]).pipe(Flag.withDescription("Platform of the build")),
+  profile: Flag.string("profile").pipe(
+    Flag.withSchema(Schema.String.check(Schema.isPattern(/\S/, { message: "Profile must not be empty" }))),
+    Flag.withDescription("EAS build profile"),
+  ),
+  distribution: Flag.choice("distribution", ["store", "internal", "simulator"]).pipe(
+    Flag.withDefault("store"),
+    Flag.withDescription("Build distribution; defaults to store"),
+  ),
+  channel: Flag.string("channel").pipe(
+    Flag.withSchema(Schema.String.check(Schema.isPattern(/\S/, { message: "Channel must not be empty" }))),
+    Flag.withDescription("Update channel configured in the build"),
+    Flag.optional,
+    Flag.map(Option.getOrUndefined),
+  ),
+  runtime: Flag.string("runtime").pipe(
+    Flag.withDescription("Runtime version; defaults to resolving it from the project"),
+    Flag.optional,
+    Flag.map(Option.getOrUndefined),
+  ),
+};
+const buildRegisterFlags = {
+  ...buildFlags,
   manifest: Flag.string("manifest").pipe(
     Flag.withDescription("Path to the app.manifest expo-updates generated for the build"),
   ),
   bundle: Flag.string("bundle").pipe(Flag.withDescription("Path to the JS bundle embedded in the build")),
-  runtime: Flag.string("runtime").pipe(
-    Flag.withDescription("Runtime version of the build; defaults to resolving it from the project"),
-    Flag.optional,
-    Flag.map(Option.getOrUndefined),
-  ),
 };
 const patchesFlags = {
   branch: common.branch,
@@ -152,7 +169,8 @@ export type CommandInput =
   | (FlagValues<typeof common> & { command: "rollback-to-embedded" })
   | (FlagValues<typeof doctorFlags> & { command: "doctor" })
   | (FlagValues<typeof initFlags> & { command: "init" })
-  | (FlagValues<typeof embeddedFlags> & { command: "register-embedded" })
+  | (FlagValues<typeof buildRegisterFlags> & { command: "build-register" })
+  | (FlagValues<typeof buildFlags> & { command: "build-get" })
   | (FlagValues<typeof patchesFlags> & { command: "patches" });
 
 export const makeCommand = <E, R>(handle: (input: CommandInput) => Effect.Effect<void, E, R>) => {
@@ -208,23 +226,42 @@ export const makeCommand = <E, R>(handle: (input: CommandInput) => Effect.Effect
       "Configure app.json with a backup, or generate a snippet for dynamic config; requires expo-updates and the public signing certificate",
     ),
   );
-  const registerEmbedded = Command.make(
-    "register-embedded",
-    embeddedFlags,
-    Effect.fn("cli.registerEmbedded")(function* (input) {
-      yield* handle({ ...input, command: "register-embedded" });
+  const buildRegister = Command.make(
+    "register",
+    buildRegisterFlags,
+    Effect.fn("cli.build.register")(function* (input) {
+      yield* handle({ ...input, command: "build-register" });
     }),
   ).pipe(
     Command.withDescription(
-      "Experimental: register the JS embedded in a store build so fresh installs can receive delta patches instead of full bundles",
+      "Register a native build for compatibility checks and fresh-install delta patches",
     ),
     Command.withExamples([
       {
         command:
-          "open-ota register-embedded --platform ios --manifest build/YourApp.app/app.manifest --bundle build/YourApp.app/main.jsbundle",
-        description: "Register an iOS build after archiving it",
+          "open-ota build register --platform ios --profile production --manifest build/YourApp.app/app.manifest --bundle build/YourApp.app/main.jsbundle",
+        description: "Register a submitted iOS production build",
       },
     ]),
+  );
+  const buildGet = Command.make(
+    "get",
+    buildFlags,
+    Effect.fn("cli.build.get")(function* (input) {
+      yield* handle({ ...input, command: "build-get" });
+    }),
+  ).pipe(
+    Command.withDescription("Find a compatible registered build"),
+    Command.withExamples([
+      {
+        command: "open-ota build get --platform ios --profile production --json",
+        description: "Find an iOS production build for the current runtime",
+      },
+    ]),
+  );
+  const build = Command.make("build").pipe(
+    Command.withDescription("Register and find native builds"),
+    Command.withSubcommands([buildRegister, buildGet]),
   );
   const patches = Command.make(
     "patches",
@@ -242,6 +279,6 @@ export const makeCommand = <E, R>(handle: (input: CommandInput) => Effect.Effect
   );
   return Command.make("open-ota").pipe(
     Command.withDescription("Publish Expo updates to a self-hosted Open OTA server"),
-    Command.withSubcommands([publish, rollback, doctor, init, registerEmbedded, patches]),
+    Command.withSubcommands([publish, rollback, doctor, init, build, patches]),
   );
 };
