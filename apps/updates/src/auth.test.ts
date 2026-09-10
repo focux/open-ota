@@ -10,6 +10,8 @@ describe.each([undefined, "Bearer wrong-token"])("authorization with %j", (autho
     ["POST", "/publish/assets/missing"],
     ["PUT", "/publish/assets/hash"],
     ["GET", "/publish/branches/staging/bundles"],
+    ["POST", "/publish/builds"],
+    ["GET", "/publish/builds"],
     ["PUT", "/publish/patches/base/target"],
     ["POST", "/publish/groups"],
     ["GET", "/admin/overview"],

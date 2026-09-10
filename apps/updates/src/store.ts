@@ -6,6 +6,7 @@ import {
   Percent,
   StoredAsset,
   type BundleUpdate,
+  type Distribution,
   Platform,
   type PlatformUpdateInput,
   type PublishGroupInput,
@@ -32,11 +33,23 @@ export interface AssetInfo {
   readonly compressedSize: number | null;
 }
 
-export interface EmbeddedUpdate {
-  readonly updateId: string;
+export interface Build {
+  readonly id: string;
+  readonly embeddedUpdateId: string;
   readonly platform: Platform;
   readonly runtimeVersion: string;
+  readonly profile: string;
+  readonly distribution: Distribution;
+  readonly channel: string | undefined;
   readonly launchAssetHash: string;
+}
+
+export interface BuildQuery {
+  readonly platform: Platform;
+  readonly runtimeVersion: string;
+  readonly profile: string;
+  readonly distribution: Distribution;
+  readonly channel: string | undefined;
 }
 
 export interface PatchBasesQuery extends SelectionQuery {
@@ -200,7 +213,8 @@ export interface UpdateStoreShape {
   readonly recentLaunchAssets: (
     query: SelectionQuery,
   ) => Effect.Effect<ReadonlyArray<LaunchAssetRef>, StorageError>;
-  readonly insertEmbedded: (embedded: EmbeddedUpdate) => Effect.Effect<void, BadRequest | StorageError>;
+  readonly registerBuild: (build: Build) => Effect.Effect<Build, BadRequest | StorageError>;
+  readonly findBuild: (query: BuildQuery) => Effect.Effect<Build | null, StorageError>;
   readonly patchBases: (query: PatchBasesQuery) => Effect.Effect<ReadonlyArray<PatchBase>, StorageError>;
   readonly patchesToward: (targetHash: string) => Effect.Effect<ReadonlyArray<PatchToward>, StorageError>;
   readonly updateById: (id: string) => Effect.Effect<Update | null, StorageError>;
@@ -506,26 +520,91 @@ function makeSqlStore() {
             AND u.rollback_to_embedded = 0
             AND u.launch_asset IS NOT NULL
           UNION ALL
-          SELECT launch_asset_hash AS hash FROM embedded_updates WHERE update_id = ${updateId}
+          SELECT launch_asset_hash AS hash FROM builds WHERE embedded_update_id = ${updateId}
         ) LIMIT 1
       `.pipe(Effect.mapError(storageFail("Could not read the update.")), storedRows(Schema.Struct({ hash: Schema.String })));
       return rows[0]?.hash ?? null;
     });
 
-    const insertEmbedded = Effect.fn("UpdateStore.insertEmbedded")(function* (embedded: EmbeddedUpdate) {
-      const missing = yield* missingAssets([embedded.launchAssetHash]);
+    const registerBuild = Effect.fn("UpdateStore.registerBuild")(function* (build: Build) {
+      const missing = yield* missingAssets([build.launchAssetHash]);
       if (missing.length > 0) {
         return yield* Effect.fail(new BadRequest({ message: `Assets not uploaded: ${missing.join(", ")}` }));
       }
       const now = DateTime.formatIso(yield* DateTime.now);
-      yield* sql`
-        INSERT INTO embedded_updates (update_id, platform, runtime_version, launch_asset_hash, created_at)
-        VALUES (${embedded.updateId}, ${embedded.platform}, ${embedded.runtimeVersion}, ${embedded.launchAssetHash}, ${now})
-        ON CONFLICT (update_id) DO UPDATE SET
+      const registered = yield* sql`
+        INSERT INTO builds (id, embedded_update_id, platform, runtime_version, launch_asset_hash, created_at, profile, distribution, channel)
+        VALUES (${build.id}, ${build.embeddedUpdateId}, ${build.platform}, ${build.runtimeVersion}, ${build.launchAssetHash}, ${now}, ${build.profile}, ${build.distribution}, ${build.channel ?? null})
+        ON CONFLICT (embedded_update_id) DO UPDATE SET
           platform = excluded.platform,
           runtime_version = excluded.runtime_version,
-          launch_asset_hash = excluded.launch_asset_hash
-      `.pipe(Effect.mapError(storageFail("Could not record the embedded update.")));
+          launch_asset_hash = excluded.launch_asset_hash,
+          profile = excluded.profile,
+          distribution = excluded.distribution,
+          channel = excluded.channel
+        RETURNING id, embedded_update_id, platform, runtime_version, profile, distribution, channel, launch_asset_hash
+      `.pipe(
+        Effect.mapError(storageFail("Could not register the build.")),
+        storedRows(Schema.Struct({
+          id: Schema.String,
+          embedded_update_id: Schema.String,
+          platform: Platform,
+          runtime_version: Schema.String,
+          profile: Schema.String,
+          distribution: Schema.Literals(["store", "internal", "simulator"]),
+          channel: Schema.NullOr(Schema.String),
+          launch_asset_hash: Schema.String,
+        })),
+      );
+      const row = registered[0]!;
+      return {
+        id: row.id,
+        embeddedUpdateId: row.embedded_update_id,
+        platform: row.platform,
+        runtimeVersion: row.runtime_version,
+        profile: row.profile,
+        distribution: row.distribution,
+        channel: row.channel ?? undefined,
+        launchAssetHash: row.launch_asset_hash,
+      };
+    });
+
+    const findBuild = Effect.fn("UpdateStore.findBuild")(function* (query: BuildQuery) {
+      const channel = query.channel ?? null;
+      const rows = yield* sql`
+        SELECT id, embedded_update_id, platform, runtime_version, profile, distribution, channel, launch_asset_hash
+        FROM builds
+        WHERE platform = ${query.platform}
+          AND runtime_version = ${query.runtimeVersion}
+          AND profile = ${query.profile}
+          AND distribution = ${query.distribution}
+          AND (${channel} IS NULL OR channel = ${channel})
+        ORDER BY created_at DESC, id DESC
+        LIMIT 1
+      `.pipe(
+        Effect.mapError(storageFail("Could not find the build.")),
+        storedRows(Schema.Struct({
+          id: Schema.String,
+          embedded_update_id: Schema.String,
+          platform: Platform,
+          runtime_version: Schema.String,
+          profile: Schema.String,
+          distribution: Schema.Literals(["store", "internal", "simulator"]),
+          channel: Schema.NullOr(Schema.String),
+          launch_asset_hash: Schema.String,
+        })),
+      );
+      const row = rows[0];
+      return row === undefined ? null : {
+        id: row.id,
+        embeddedUpdateId: row.embedded_update_id,
+        platform: row.platform,
+        runtimeVersion: row.runtime_version,
+        profile: row.profile,
+        distribution: row.distribution,
+        channel: row.channel ?? undefined,
+        launchAssetHash: row.launch_asset_hash,
+      };
     });
 
     // Fleet first, by how many devices run each bundle, then the embedded
@@ -540,14 +619,14 @@ function makeSqlStore() {
           SELECT u.id, json_extract(u.launch_asset, '$.hash') AS hash FROM updates u
           WHERE u.rollback_to_embedded = 0 AND u.launch_asset IS NOT NULL
           UNION ALL
-          SELECT update_id AS id, launch_asset_hash AS hash FROM embedded_updates
+          SELECT embedded_update_id AS id, launch_asset_hash AS hash FROM builds
         ) h ON h.id = d.current_update_id
         WHERE c.branch_name = ${query.branch} AND d.platform = ${query.platform}
           AND d.runtime_version = ${query.runtimeVersion} AND d.last_seen_at >= ${query.fleetSince}
         GROUP BY h.hash, d.current_update_id ORDER BY devices DESC, h.hash LIMIT ${query.limit}
       `.pipe(Effect.mapError(fail), storedRows(Schema.Struct({ hash: Schema.String, update_id: Schema.String, devices: Schema.Int })));
       const embedded = yield* sql`
-        SELECT update_id, launch_asset_hash AS hash FROM embedded_updates
+        SELECT embedded_update_id AS update_id, launch_asset_hash AS hash FROM builds
         WHERE platform = ${query.platform} AND runtime_version = ${query.runtimeVersion}
         ORDER BY created_at DESC, update_id LIMIT ${query.limit}
       `.pipe(Effect.mapError(fail), storedRows(Schema.Struct({ update_id: Schema.String, hash: Schema.String })));
@@ -573,7 +652,7 @@ function makeSqlStore() {
           WHERE g.published_at IS NOT NULL AND u.rollback_to_embedded = 0
             AND json_extract(u.launch_asset, '$.hash') IN ${sql.in(batch)}
           UNION ALL
-          SELECT update_id AS id, launch_asset_hash AS hash, 1 AS embedded FROM embedded_updates
+          SELECT embedded_update_id AS id, launch_asset_hash AS hash, 1 AS embedded FROM builds
           WHERE launch_asset_hash IN ${sql.in(batch)}
           ORDER BY embedded, id
         `.pipe(Effect.mapError(fail), storedRows(Schema.Struct({ id: Schema.String, hash: Schema.String, embedded: Schema.Int })));
@@ -624,7 +703,7 @@ function makeSqlStore() {
           SELECT json_extract(item.value, '$.hash') AS hash FROM retained, json_each(retained.assets) AS item
           WHERE retained.assets IS NOT NULL
           UNION
-          SELECT launch_asset_hash AS hash FROM embedded_updates
+          SELECT launch_asset_hash AS hash FROM builds
         )
         SELECT hash FROM assets
         WHERE created_at < ${window.uploadGrace}
@@ -961,7 +1040,8 @@ function makeSqlStore() {
       patchSize,
       launchAssetHash,
       recentLaunchAssets,
-      insertEmbedded,
+      registerBuild,
+      findBuild,
       patchBases,
       patchesToward,
       updateById,
@@ -1077,7 +1157,7 @@ function makeMemoryStore(): UpdateStoreShape {
   ]);
   const assets = new Map<string, AssetInfo & { createdAt: string; touchedAt: string | undefined }>();
   const patches = new Map<string, number>();
-  const embedded = new Map<string, EmbeddedUpdate>();
+  const builds = new Map<string, Build>();
   const pruned = new Set<string>();
   const groups: Array<Group> = [];
   const devices = new Map<string, DeviceCheck & { lastSeenAt: string }>();
@@ -1290,22 +1370,33 @@ function makeMemoryStore(): UpdateStoreShape {
       Effect.sync(() => {
         const update = updates().find((candidate) => candidate.id === updateId);
         if (update !== undefined) return update.kind === "rollback" ? null : update.launchAsset.hash;
-        return embedded.get(updateId)?.launchAssetHash ?? null;
+        return [...builds.values()].find((build) => build.embeddedUpdateId === updateId)?.launchAssetHash ?? null;
       }),
-    insertEmbedded: (input) =>
+    registerBuild: (input) =>
       Effect.gen(function* () {
         if (!assets.has(input.launchAssetHash)) {
           return yield* Effect.fail(new BadRequest({ message: `Assets not uploaded: ${input.launchAssetHash}` }));
         }
-        embedded.set(input.updateId, input);
+        const existing = [...builds.values()].find((build) => build.embeddedUpdateId === input.embeddedUpdateId);
+        const build = existing === undefined ? input : { ...input, id: existing.id };
+        builds.set(build.id, build);
+        return build;
       }),
+    findBuild: (query) =>
+      Effect.sync(() => [...builds.values()].reverse().find((build) =>
+        build.platform === query.platform &&
+        build.runtimeVersion === query.runtimeVersion &&
+        build.profile === query.profile &&
+        build.distribution === query.distribution &&
+        (query.channel === undefined || build.channel === query.channel)
+      ) ?? null),
     patchBases: (query) =>
       Effect.sync(() => {
         const hashOf = (updateId: string | undefined) => {
           if (updateId === undefined) return undefined;
           const update = updates().find((candidate) => candidate.id === updateId);
           if (update !== undefined) return update.kind === "bundle" ? update.launchAsset.hash : undefined;
-          return embedded.get(updateId)?.launchAssetHash;
+          return [...builds.values()].find((build) => build.embeddedUpdateId === updateId)?.launchAssetHash;
         };
         const fleet = new Map<string, PatchBase>();
         for (const device of devices.values()) {
@@ -1321,10 +1412,10 @@ function makeMemoryStore(): UpdateStoreShape {
           const current = fleet.get(key) ?? { hash, source: "fleet" as const, updateId: device.currentUpdateId ?? null, devices: 0 };
           fleet.set(key, { ...current, devices: current.devices + 1 });
         }
-        const embeddedBases = [...embedded.values()]
+        const embeddedBases = [...builds.values()]
           .filter((row) => row.platform === query.platform && row.runtimeVersion === query.runtimeVersion)
           .reverse()
-          .map((row) => ({ hash: row.launchAssetHash, source: "embedded" as const, updateId: row.updateId, devices: 0 }));
+          .map((row) => ({ hash: row.launchAssetHash, source: "embedded" as const, updateId: row.embeddedUpdateId, devices: 0 }));
         const recent = newestFirst(updates())
           .flatMap((update) =>
             update.kind === "bundle" && update.branch === query.branch && update.platform === query.platform && update.runtimeVersion === query.runtimeVersion
@@ -1349,7 +1440,7 @@ function makeMemoryStore(): UpdateStoreShape {
               createdAt: seeded,
               bases: [
                 ...updates().flatMap((update) => (update.kind === "bundle" && update.launchAsset.hash === baseHash ? [{ updateId: update.id, embedded: false }] : [])),
-                ...[...embedded.values()].flatMap((row) => (row.launchAssetHash === baseHash ? [{ updateId: row.updateId, embedded: true }] : [])),
+                ...[...builds.values()].flatMap((row) => (row.launchAssetHash === baseHash ? [{ updateId: row.embeddedUpdateId, embedded: true }] : [])),
               ],
             };
           }),
@@ -1370,7 +1461,7 @@ function makeMemoryStore(): UpdateStoreShape {
           if (device.currentUpdateId !== undefined) deviceIds.add(device.currentUpdateId);
           if (device.servedUpdateId !== undefined) deviceIds.add(device.servedUpdateId);
         }
-        const referenced = new Set([...embedded.values()].map((row) => row.launchAssetHash));
+        const referenced = new Set([...builds.values()].map((row) => row.launchAssetHash));
         for (const group of groups) {
           for (const update of group.updates) {
             if (update.kind !== "bundle") continue;

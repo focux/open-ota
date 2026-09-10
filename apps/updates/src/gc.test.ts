@@ -64,8 +64,9 @@ describe.each(stores)("retention sweep over the %s store", (_, store) => {
     // The embedded bundle of a store build is always kept.
     const embedded = Uint8Array.from(v2).reverse() as Uint8Array<ArrayBuffer>;
     const embeddedHash = await upload(embedded);
-    expect((await post("/publish/embedded", {
+    expect((await post("/publish/builds", {
       updateId: crypto.randomUUID(), platform: "ios", runtimeVersion: "rt-1",
+      profile: "production", distribution: "store", channel: "production",
       launchAsset: { hash: embeddedHash, key: "embedded", contentType: "application/javascript" },
     })).status).toBe(201);
 

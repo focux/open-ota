@@ -11,7 +11,7 @@ import { initialize } from "./setup.ts";
 import { Processes } from "./expo.ts";
 import { Progress } from "./output.ts";
 import { Differ } from "./patches.ts";
-import { backfillPatches, publish, registerEmbedded, rollbackToEmbedded } from "./publish.ts";
+import { backfillPatches, getBuild, publish, registerBuild, rollbackToEmbedded } from "./publish.ts";
 import { Server } from "./server.ts";
 
 const execute = Effect.fn("cli.execute")(function* (args: CommandInput) {
@@ -45,23 +45,45 @@ const execute = Effect.fn("cli.execute")(function* (args: CommandInput) {
       else if (result.mode === "snippet") yield* Console.log(JSON.stringify(result.config, null, 2));
       return;
     }
-    if (args.command === "register-embedded") {
-      const result = yield* registerEmbedded({
+    if (args.command === "build-register") {
+      const result = yield* registerBuild({
         projectDir,
         platform: args.platform,
         manifestPath: path.resolve(projectDir, args.manifest),
         bundlePath: path.resolve(projectDir, args.bundle),
         runtimeVersion: args.runtime,
+        profile: args.profile,
+        distribution: args.distribution,
+        channel: args.channel,
       });
       yield* progress.close;
-      if (args.json) yield* Console.log(JSON.stringify({ command: args.command, server: args.url, ...result }));
+      if (args.json) yield* Console.log(JSON.stringify({ command: "build register", server: args.url, build: result }));
       else {
         yield* progress.report({ type: "info", message: "" });
         yield* progress.report({
           type: "info",
-          message: `Registered ${result.platform} build ${result.updateId} (runtime ${result.runtimeVersion}). Run open-ota patches --branch <name> to add patches from it, or publish normally.`,
+          message: `Registered ${result.platform} ${result.profile} build ${result.id} (runtime ${result.runtimeVersion}). Run open-ota patches --branch <name> to add patches from it, or publish normally.`,
         });
       }
+      return;
+    }
+    if (args.command === "build-get") {
+      const build = yield* getBuild({
+        projectDir,
+        platform: args.platform,
+        runtimeVersion: args.runtime,
+        profile: args.profile,
+        distribution: args.distribution,
+        channel: args.channel,
+      });
+      yield* progress.close;
+      if (args.json) yield* Console.log(JSON.stringify({ command: "build get", server: args.url, build }));
+      else yield* progress.report({
+        type: "info",
+        message: build === null
+          ? `No compatible ${args.platform} ${args.profile} build found.`
+          : `Found ${build.platform} ${build.profile} build ${build.id} (runtime ${build.runtimeVersion}).`,
+      });
       return;
     }
     if (args.command === "patches") {

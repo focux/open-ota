@@ -3,7 +3,7 @@ import { AssetStore } from "./assets.ts";
 import { UpdateStore } from "./store.ts";
 
 // What a sweep keeps. Everything an update in the kept set references stays;
-// registered embedded bundles always stay.
+// bundles registered with native builds always stay.
 export interface RetentionPolicy {
   // Newest published groups per branch that always keep their assets.
   readonly keepGroups: number;

@@ -38,10 +38,26 @@ export type PatchUpload = typeof PatchUpload.Type;
 const UpdatePatches = Schema.Struct({
   patches: Schema.Array(Schema.Struct({ baseHash: AssetHash, size: Schema.Number })),
 });
-export interface EmbeddedInput {
+const Build = Schema.Struct({
+  id: Schema.String,
+  embeddedUpdateId: Schema.String,
+  platform: Schema.Literals(["ios", "android"]),
+  runtimeVersion: Schema.String,
+  profile: Schema.String,
+  distribution: Schema.Literals(["store", "internal", "simulator"]),
+  channel: Schema.optionalKey(Schema.String),
+  launchAssetHash: AssetHash,
+});
+export type Build = typeof Build.Type;
+const BuildResult = Schema.Struct({ build: Schema.NullOr(Build) });
+
+export interface BuildInput {
   readonly updateId: string;
-  readonly platform: string;
+  readonly platform: Build["platform"];
   readonly runtimeVersion: string;
+  readonly profile: string;
+  readonly distribution: Build["distribution"];
+  readonly channel?: string;
   readonly launchAsset: { hash: string; key: string; contentType: string; fileExtension: string };
 }
 
@@ -90,7 +106,14 @@ export class Server extends Context.Service<
     patchBases(branch: string, platform: string, runtimeVersion: string, target: string): Effect.Effect<PatchBases, CliFailure>;
     uploadPatch(base: string, target: string, bytes: Uint8Array): Effect.Effect<PatchUpload, CliFailure>;
     updatePatches(updateId: string): Effect.Effect<ReadonlyArray<string>, CliFailure>;
-    registerEmbedded(input: EmbeddedInput): Effect.Effect<{ updateId: string }, CliFailure>;
+    registerBuild(input: BuildInput): Effect.Effect<Build, CliFailure>;
+    findBuild(query: {
+      platform: Build["platform"];
+      runtimeVersion: string;
+      profile: string;
+      distribution: Build["distribution"];
+      channel: string | undefined;
+    }): Effect.Effect<Build | null, CliFailure>;
   }
 >()("cli/Server") {
   static readonly layer = (url: string, token: Redacted.Redacted<string>) =>
@@ -212,13 +235,28 @@ export class Server extends Context.Service<
             const body = yield* HttpClientResponse.schemaBodyJson(UpdatePatches)(response).pipe(Effect.mapError(invalidResponse));
             return body.patches.map((patch) => patch.baseHash);
           }),
-          registerEmbedded: Effect.fn("server.registerEmbedded")(function* (input) {
+          registerBuild: Effect.fn("server.registerBuild")(function* (input) {
             const response = yield* request(
-              HttpClientRequest.post("/publish/embedded").pipe(HttpClientRequest.bodyJsonUnsafe(input)),
+              HttpClientRequest.post("/publish/builds").pipe(HttpClientRequest.bodyJsonUnsafe(input)),
             );
-            return yield* HttpClientResponse.schemaBodyJson(Schema.Struct({ updateId: Schema.String }))(response).pipe(
-              Effect.mapError(invalidResponse),
+            const result = yield* HttpClientResponse.schemaBodyJson(BuildResult)(response).pipe(Effect.mapError(invalidResponse));
+            if (result.build === null) return yield* new CliFailure({ message: "The server did not return the registered build." });
+            return result.build;
+          }),
+          findBuild: Effect.fn("server.findBuild")(function* (query) {
+            const response = yield* request(
+              HttpClientRequest.get("/publish/builds").pipe(
+                HttpClientRequest.setUrlParams({
+                  platform: query.platform,
+                  runtime: query.runtimeVersion,
+                  profile: query.profile,
+                  distribution: query.distribution,
+                  ...(query.channel === undefined ? {} : { channel: query.channel }),
+                }),
+              ),
             );
+            const result = yield* HttpClientResponse.schemaBodyJson(BuildResult)(response).pipe(Effect.mapError(invalidResponse));
+            return result.build;
           }),
         });
       }),

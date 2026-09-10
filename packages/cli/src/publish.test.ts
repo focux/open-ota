@@ -19,11 +19,13 @@ interface TestServer {
 }
 import {
   backfillPatches as backfillEffect,
+  getBuild as getBuildEffect,
   publish as publishEffect,
-  registerEmbedded as registerEffect,
+  registerBuild as registerBuildEffect,
   rollbackToEmbedded as rollbackEffect,
   type BackfillOptions,
-  type EmbeddedOptions,
+  type BuildGetOptions,
+  type BuildRegisterOptions,
   type PublishOptions,
   type RollbackOptions,
 } from "./publish.ts";
@@ -102,6 +104,16 @@ interface ServerOptions {
   covered?: ReadonlyArray<string>;
   decline?: string;
   contents?: Record<string, string>;
+  build?: {
+    id: string;
+    embeddedUpdateId: string;
+    platform: "ios" | "android";
+    runtimeVersion: string;
+    profile: string;
+    distribution: "store" | "internal" | "simulator";
+    channel?: string;
+    launchAssetHash: string;
+  } | null;
 }
 
 const makeServer = (missing: ReadonlyArray<string>, options: ServerOptions = {}) => {
@@ -147,9 +159,32 @@ const makeServer = (missing: ReadonlyArray<string>, options: ServerOptions = {})
     if (url.includes("/admin/updates/")) {
       return Response.json({ patches: (options.covered ?? []).map((baseHash) => ({ baseHash, size: 1 })) });
     }
-    if (url.endsWith("/publish/embedded")) {
+    if (url.endsWith("/publish/builds") && (init?.method ?? "GET") === "POST") {
       const text = bytes === undefined ? (body as string) : Buffer.from(bytes).toString();
-      return Response.json({ updateId: (JSON.parse(text) as { updateId: string }).updateId.toLowerCase() }, { status: 201 });
+      const input = JSON.parse(text) as {
+        updateId: string;
+        platform: "ios" | "android";
+        runtimeVersion: string;
+        profile: string;
+        distribution: "store" | "internal" | "simulator";
+        channel?: string;
+        launchAsset: { hash: string };
+      };
+      return Response.json({
+        build: {
+          id: `build-${input.updateId.toLowerCase()}`,
+          embeddedUpdateId: input.updateId.toLowerCase(),
+          platform: input.platform,
+          runtimeVersion: input.runtimeVersion,
+          profile: input.profile,
+          distribution: input.distribution,
+          ...(input.channel === undefined ? {} : { channel: input.channel }),
+          launchAssetHash: input.launchAsset.hash,
+        },
+      }, { status: 201 });
+    }
+    if (url.includes("/publish/builds?") && (init?.method ?? "GET") === "GET") {
+      return Response.json({ build: options.build ?? null });
     }
     if (url.endsWith("/publish/groups")) {
       if (options.group !== undefined) {
@@ -225,7 +260,8 @@ const runWith = <A, E>(
   );
 const publish = (options: PublishOptions & TestOptions) => runWith(publishEffect(options), options);
 const rollbackToEmbedded = (options: RollbackOptions & TestOptions) => runWith(rollbackEffect(options), options);
-const registerEmbedded = (options: EmbeddedOptions & TestOptions) => runWith(registerEffect(options), options);
+const registerBuild = (options: BuildRegisterOptions & TestOptions) => runWith(registerBuildEffect(options), options);
+const getBuild = (options: BuildGetOptions & TestOptions) => runWith(getBuildEffect(options), options);
 const backfillPatches = (options: BackfillOptions & TestOptions) => runWith(backfillEffect(options), options);
 
 const groupBody = (calls: ReadonlyArray<Call>) =>
@@ -489,7 +525,7 @@ describe("patches", () => {
   });
 });
 
-describe("register-embedded", () => {
+describe("build registry", () => {
   it("uploads the build's bundle if needed and registers it under the build's update id", async () => {
     const dist = await makeDist();
     const id = "1B4E28BA-2FA1-11D2-883F-B9A761BDE3FB";
@@ -497,27 +533,42 @@ describe("register-embedded", () => {
     await writeFile(manifestPath, JSON.stringify({ id, assets: [] }));
     const { server, calls } = makeServer([sha(iosBundle)]);
 
-    const result = await registerEmbedded({
+    const result = await registerBuild({
       projectDir: dist,
       platform: "ios",
       manifestPath,
       bundlePath: path.join(dist, "_expo/static/js/ios/index.hbc"),
       runtimeVersion: undefined,
+      profile: "production",
+      distribution: "store",
+      channel: "production",
       server,
       run: fakeRun,
       report: () => {},
     });
 
-    expect(result).toEqual({ updateId: id.toLowerCase(), platform: "ios", runtimeVersion: "rt-ios", hash: sha(iosBundle) });
+    expect(result).toEqual({
+      id: `build-${id.toLowerCase()}`,
+      embeddedUpdateId: id.toLowerCase(),
+      platform: "ios",
+      runtimeVersion: "rt-ios",
+      profile: "production",
+      distribution: "store",
+      channel: "production",
+      launchAssetHash: sha(iosBundle),
+    });
     expect(calls.map((call) => [call.method, new URL(call.url).pathname])).toEqual([
       ["POST", "/publish/assets/missing"],
       ["PUT", `/publish/assets/${sha(iosBundle)}`],
-      ["POST", "/publish/embedded"],
+      ["POST", "/publish/builds"],
     ]);
     expect(JSON.parse(calls[2]!.body)).toEqual({
       updateId: id,
       platform: "ios",
       runtimeVersion: "rt-ios",
+      profile: "production",
+      distribution: "store",
+      channel: "production",
       launchAsset: { hash: sha(iosBundle), key: md5(iosBundle), contentType: "application/javascript", fileExtension: ".bundle" },
     });
   });
@@ -529,12 +580,15 @@ describe("register-embedded", () => {
     const { server, calls } = makeServer([]);
     const runs: Array<string> = [];
 
-    const result = await registerEmbedded({
+    const result = await registerBuild({
       projectDir: dist,
       platform: "android",
       manifestPath,
       bundlePath: path.join(dist, "_expo/static/js/android/index.hbc"),
       runtimeVersion: "1.2.3",
+      profile: "preview",
+      distribution: "internal",
+      channel: undefined,
       server,
       run: (command, args, cwd) => {
         runs.push(args.join(" "));
@@ -554,17 +608,57 @@ describe("register-embedded", () => {
     await writeFile(manifestPath, JSON.stringify({ hello: "world" }));
     const { server } = makeServer([]);
     await expect(
-      registerEmbedded({
+      registerBuild({
         projectDir: dist,
         platform: "ios",
         manifestPath,
         bundlePath: path.join(dist, "_expo/static/js/ios/index.hbc"),
         runtimeVersion: undefined,
+        profile: "production",
+        distribution: "store",
+        channel: undefined,
         server,
         run: fakeRun,
         report: () => {},
       }),
     ).rejects.toThrow("Point --manifest at the app.manifest");
+  });
+
+  it("finds a compatible build without relying on device observations", async () => {
+    const dist = await makeDist();
+    const expected = {
+      id: crypto.randomUUID(),
+      embeddedUpdateId: crypto.randomUUID(),
+      platform: "ios" as const,
+      runtimeVersion: "rt-ios",
+      profile: "production",
+      distribution: "store" as const,
+      channel: "production",
+      launchAssetHash: sha(iosBundle),
+    };
+    const { server, calls } = makeServer([], { build: expected });
+
+    const result = await getBuild({
+      projectDir: dist,
+      platform: "ios",
+      runtimeVersion: undefined,
+      profile: "production",
+      distribution: "store",
+      channel: "production",
+      server,
+      run: fakeRun,
+      report: () => {},
+    });
+
+    expect(result).toEqual(expected);
+    expect(calls).toHaveLength(1);
+    expect(new URL(calls[0]!.url).searchParams).toEqual(new URLSearchParams({
+      platform: "ios",
+      runtime: "rt-ios",
+      profile: "production",
+      distribution: "store",
+      channel: "production",
+    }));
   });
 });
 

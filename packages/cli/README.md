@@ -44,8 +44,11 @@ open-ota publish --branch <name> [--message <text>] [--rollout <0-100>]
                  [--no-patches] [--project <dir>] [--server <url>] [--token <token>]
 open-ota rollback-to-embedded --branch <name> [--platform ios|android] [--message <text>]
 open-ota patches --branch <name> [--platform ios|android] [--project <dir>]
-open-ota register-embedded --platform ios|android --manifest <app.manifest> --bundle <bundle>
-                           [--runtime <version>] [--project <dir>]   (experimental)
+open-ota build register --platform ios|android --profile <name> [--distribution store|internal|simulator]
+                        [--channel <name>] --manifest <app.manifest> --bundle <bundle>
+                        [--runtime <version>] [--project <dir>]
+open-ota build get --platform ios|android --profile <name> [--distribution store|internal|simulator]
+                   [--channel <name>] [--runtime <version>] [--project <dir>]
 open-ota --help
 ```
 
@@ -72,23 +75,34 @@ reported with `--verbose`; a failure is a warning and the update still publishes
 missing, from every base the server reports, skipping bases already covered. Run it after the fleet
 moved on or after a publish with `--no-patches`.
 
-### Experimental: patching fresh installs
+## Build registry
+
+`build get` answers whether a compatible native build was registered for a platform, runtime,
+profile, distribution and optional channel. When `--runtime` is omitted, the CLI resolves the
+current project's runtime version. The command returns successfully when no build matches; its JSON
+result contains `"build": null`, which makes it suitable for deciding between an OTA and a native
+build in CI.
+
+Register builds only after the delivery step your workflow considers successful. For production,
+that normally means after the store submission succeeds.
+
+### Patching fresh installs
 
 A fresh install runs the JavaScript embedded in its build. The `expo-updates` client offers a patch
 against that bundle like any other, but the server can only answer if it holds the bundle's bytes,
-and nothing uploads them on its own. `register-embedded` fills the gap by registering a build's
-bundle under the update id in its manifest. It is implemented and tested against the server, but it
-has not been verified on a device yet, so treat it as an experiment and watch a fresh install's
-first update in the dashboard's patches panel before relying on it.
+and nothing uploads them on its own. `build register` stores the build and uploads its embedded
+bundle under the update id in its manifest. This patch path is implemented and tested against the
+server, but it has not been verified on a device yet, so watch a fresh install's first update in the
+dashboard's patches panel before relying on it.
 
 The files come from the built artifact, not from `expo export`:
 
 ```sh
 # iOS: the .app produced by the archive
-open-ota register-embedded --platform ios \
+open-ota build register --platform ios --profile production --channel production \
   --manifest build/YourApp.app/app.manifest --bundle build/YourApp.app/main.jsbundle
 # Android: unzip the APK or AAB first
-open-ota register-embedded --platform android \
+open-ota build register --platform android --profile production --channel production \
   --manifest apk/assets/app.manifest --bundle apk/assets/index.android.bundle
 open-ota patches --branch production
 ```
@@ -141,15 +155,17 @@ Use `--json` to write one result object to stdout for scripts:
 
 ```sh
 npx open-ota publish --branch staging --json > published.json
+npx open-ota build get --platform ios --profile production --channel production --json > build.json
 ```
 
-The object contains `command`, `server`, `branch`, `message`, `groupId`, and `updates` (each with
+The publish object contains `command`, `server`, `branch`, `message`, `groupId`, and `updates` (each with
 `id`, `platform`, and `runtimeVersion`). Publish results also include `rolloutPercent`.
+Build commands return `command`, `server`, and `build`; a lookup uses `null` when no build matches.
 Progress remains on stderr. Fatal errors exit with status 1 and do not write a result object;
 optional patch failures still return a successful result.
 
 `open-ota --version` prints the installed version. Run `open-ota publish --help` or
-`open-ota rollback-to-embedded --help` for command-specific options and examples.
+`open-ota rollback-to-embedded --help` or `open-ota build --help` for command-specific options and examples.
 
 Command parsing, validation, help, and version output use Effect 4's `effect/unstable/cli`.
 Generate shell completions with `open-ota --completions bash` (also supports zsh, fish, and sh).

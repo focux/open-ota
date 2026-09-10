@@ -89,6 +89,41 @@ describe("command validation", () => {
     });
   });
 
+  it("parses build registration metadata and removes register-embedded", async () => {
+    expect(await parseCommand([
+      "build", "register",
+      "--platform", "ios",
+      "--profile", "production",
+      "--channel", "production",
+      "--manifest", "app.manifest",
+      "--bundle", "main.jsbundle",
+    ], env)).toMatchObject({
+      command: "build-register",
+      platform: "ios",
+      profile: "production",
+      distribution: "store",
+      channel: "production",
+    });
+    await expect(parseCommand(["register-embedded"], env)).rejects.toThrow("Unknown subcommand");
+  });
+
+  it("parses a build lookup for the current runtime", async () => {
+    expect(await parseCommand([
+      "build", "get",
+      "--platform", "android",
+      "--profile", "preview",
+      "--distribution", "internal",
+      "--json",
+    ], env)).toMatchObject({
+      command: "build-get",
+      platform: "android",
+      profile: "preview",
+      distribution: "internal",
+      runtime: undefined,
+      json: true,
+    });
+  });
+
   it("generates completions without dispatching a publish", async () => {
     const result = await parseCommand(["--completions", "bash"], {});
     expect(result).toMatchObject({ kind: "help", text: expect.stringContaining("rollback-to-embedded") });

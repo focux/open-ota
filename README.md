@@ -251,17 +251,17 @@ CLI applies the same rule before uploading. Bundles above `OTA_PATCH_MAX_BUNDLE_
 applies it again with the same engine and refuses to store anything that does not rebuild the
 target bundle byte for byte. Devices verify the manifest hash as always.
 
-**Experimental: fresh installs.** A device that has never taken an update runs the bundle baked
-into its build. The `expo-updates` client will apply a patch against it, but the server only can if
-it holds that bundle, and this has not been verified on devices yet. `open-ota register-embedded`
-makes the server aware of a build's bundle; see the
-[CLI reference](packages/cli/README.md#experimental-patching-fresh-installs) before relying on it.
+**Registered builds and fresh installs.** `open-ota build register` records a native build by
+platform, runtime, profile and distribution. CI can use `open-ota build get` to decide whether a
+compatible build already exists without waiting for a device to launch it. Registration also uploads
+the build's embedded bundle so fresh installs can receive delta patches from it. Device verification
+of that fresh-install patch path is still pending; see the [CLI reference](packages/cli/README.md#build-registry).
 
 **Retention.** A sweep runs nightly (`17 3 * * *` UTC) and can be run from the dashboard API with
 `POST /admin/gc`. It deletes bundles, assets and patches that nothing retained references. Retained
 means: the newest `OTA_RETAIN_GROUPS` groups on each branch, any group younger than
 `OTA_RETAIN_DAYS`, any update a device reported running or receiving within `OTA_RETAIN_DEVICE_DAYS`,
-any active rollout, any bundle registered with the experimental `register-embedded`, and anything
+any active rollout, any bundle registered with a native build, and anything
 uploaded or checked in the last day, since a publish may still be in flight. An update whose bundle was swept stays in the history
 but is no longer offered as a rollback target.
 

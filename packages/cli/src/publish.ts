@@ -63,13 +63,25 @@ export interface PublishOptions extends CommonOptions {
 
 export type RollbackOptions = CommonOptions;
 
-export interface EmbeddedOptions {
+export interface BuildRegisterOptions {
   projectDir: string;
   platform: Platform;
   // The `app.manifest` expo-updates generated for the build, and its bundle.
   manifestPath: string;
   bundlePath: string;
   runtimeVersion: string | undefined;
+  profile: string;
+  distribution: "store" | "internal" | "simulator";
+  channel: string | undefined;
+}
+
+export interface BuildGetOptions {
+  projectDir: string;
+  platform: Platform;
+  runtimeVersion: string | undefined;
+  profile: string;
+  distribution: "store" | "internal" | "simulator";
+  channel: string | undefined;
 }
 
 export interface BackfillOptions {
@@ -238,7 +250,7 @@ export const publish = Effect.fn("publish.publish")(function* (options: PublishO
 
 // A store build's JS is an update like any other to the devices running it.
 // Registering it lets the server patch fresh installs to the latest update.
-export const registerEmbedded = Effect.fn("publish.registerEmbedded")(function* (options: EmbeddedOptions) {
+export const registerBuild = Effect.fn("build.register")(function* (options: BuildRegisterOptions) {
   const server = yield* Server;
   const progress = yield* Progress;
   const fs = yield* FileSystem.FileSystem;
@@ -264,15 +276,31 @@ export const registerEmbedded = Effect.fn("publish.registerEmbedded")(function* 
     yield* uploadMissing(missing, uploads);
     yield* progress.report({ type: "success", message: "Uploaded the embedded bundle" });
   }
-  yield* progress.report({ type: "start", message: "Registering the embedded update" });
-  const registered = yield* server.registerEmbedded({
+  yield* progress.report({ type: "start", message: "Registering the build" });
+  const registered = yield* server.registerBuild({
     updateId: manifest.id,
     platform: options.platform,
     runtimeVersion,
+    profile: options.profile,
+    distribution: options.distribution,
+    ...(options.channel === undefined ? {} : { channel: options.channel }),
     launchAsset,
   });
-  yield* progress.report({ type: "success", message: `Registered embedded update ${registered.updateId}` });
-  return { updateId: registered.updateId, platform: options.platform, runtimeVersion, hash: launchAsset.hash };
+  yield* progress.report({ type: "success", message: `Registered build ${registered.id}` });
+  return registered;
+});
+
+export const getBuild = Effect.fn("build.get")(function* (options: BuildGetOptions) {
+  const server = yield* Server;
+  const runtimeVersion =
+    options.runtimeVersion ?? (yield* resolveRuntimeVersion(options.projectDir, options.platform));
+  return yield* server.findBuild({
+    platform: options.platform,
+    runtimeVersion,
+    profile: options.profile,
+    distribution: options.distribution,
+    channel: options.channel,
+  });
 });
 
 // Computes the patches the newest bundle on a branch is missing: after a build
