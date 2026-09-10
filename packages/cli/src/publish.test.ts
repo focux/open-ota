@@ -23,7 +23,9 @@ import {
   publish as publishEffect,
   registerBuild as registerBuildEffect,
   rollbackToEmbedded as rollbackEffect,
+  setBuildActive as setBuildActiveEffect,
   type BackfillOptions,
+  type BuildActivationOptions,
   type BuildGetOptions,
   type BuildRegisterOptions,
   type PublishOptions,
@@ -113,6 +115,7 @@ interface ServerOptions {
     distribution: "store" | "internal" | "simulator";
     channel?: string;
     launchAssetHash: string;
+    active: boolean;
   } | null;
 }
 
@@ -180,11 +183,17 @@ const makeServer = (missing: ReadonlyArray<string>, options: ServerOptions = {})
           distribution: input.distribution,
           ...(input.channel === undefined ? {} : { channel: input.channel }),
           launchAssetHash: input.launchAsset.hash,
+          active: true,
         },
       }, { status: 201 });
     }
     if (url.includes("/publish/builds?") && (init?.method ?? "GET") === "GET") {
       return Response.json({ build: options.build ?? null });
+    }
+    if (url.includes("/publish/builds/") && init?.method === "PATCH") {
+      if (options.build === undefined || options.build === null) return Response.json({ error: "Unknown build." }, { status: 404 });
+      const text = bytes === undefined ? (body as string) : Buffer.from(bytes).toString();
+      return Response.json({ build: { ...options.build, active: (JSON.parse(text) as { active: boolean }).active } });
     }
     if (url.endsWith("/publish/groups")) {
       if (options.group !== undefined) {
@@ -262,6 +271,7 @@ const publish = (options: PublishOptions & TestOptions) => runWith(publishEffect
 const rollbackToEmbedded = (options: RollbackOptions & TestOptions) => runWith(rollbackEffect(options), options);
 const registerBuild = (options: BuildRegisterOptions & TestOptions) => runWith(registerBuildEffect(options), options);
 const getBuild = (options: BuildGetOptions & TestOptions) => runWith(getBuildEffect(options), options);
+const setBuildActive = (options: BuildActivationOptions & TestOptions) => runWith(setBuildActiveEffect(options), options);
 const backfillPatches = (options: BackfillOptions & TestOptions) => runWith(backfillEffect(options), options);
 
 const groupBody = (calls: ReadonlyArray<Call>) =>
@@ -556,6 +566,7 @@ describe("build registry", () => {
       distribution: "store",
       channel: "production",
       launchAssetHash: sha(iosBundle),
+      active: true,
     });
     expect(calls.map((call) => [call.method, new URL(call.url).pathname])).toEqual([
       ["POST", "/publish/assets/missing"],
@@ -635,6 +646,7 @@ describe("build registry", () => {
       distribution: "store" as const,
       channel: "production",
       launchAssetHash: sha(iosBundle),
+      active: true,
     };
     const { server, calls } = makeServer([], { build: expected });
 
@@ -645,6 +657,7 @@ describe("build registry", () => {
       profile: "production",
       distribution: "store",
       channel: "production",
+      includeInactive: false,
       server,
       run: fakeRun,
       report: () => {},
@@ -659,6 +672,66 @@ describe("build registry", () => {
       distribution: "store",
       channel: "production",
     }));
+  });
+
+  it("asks the server for inactive builds only when told to", async () => {
+    const dist = await makeDist();
+    const { server, calls } = makeServer([], { build: null });
+    const result = await getBuild({
+      projectDir: dist,
+      platform: "android",
+      runtimeVersion: "1.2.3",
+      profile: "preview",
+      distribution: "internal",
+      channel: undefined,
+      includeInactive: true,
+      server,
+      run: fakeRun,
+      report: () => {},
+    });
+    expect(result).toBeNull();
+    expect(new URL(calls[0]!.url).searchParams).toEqual(new URLSearchParams({
+      platform: "android",
+      runtime: "1.2.3",
+      profile: "preview",
+      distribution: "internal",
+      includeInactive: "true",
+    }));
+  });
+
+  it("deactivates and reactivates a build by id", async () => {
+    const registered = {
+      id: crypto.randomUUID(),
+      embeddedUpdateId: crypto.randomUUID(),
+      platform: "ios" as const,
+      runtimeVersion: "rt-ios",
+      profile: "production",
+      distribution: "store" as const,
+      launchAssetHash: sha(iosBundle),
+      active: true,
+    };
+    const { server, calls } = makeServer([], { build: registered });
+    const events: Array<string> = [];
+    const report = (event: { type: string; message?: string }) => events.push(`${event.type}:${event.message ?? ""}`);
+
+    const deactivated = await setBuildActive({ id: registered.id, active: false, server, run: fakeRun, report });
+    expect(deactivated).toEqual({ ...registered, active: false });
+    const reactivated = await setBuildActive({ id: registered.id, active: true, server, run: fakeRun, report });
+    expect(reactivated).toEqual({ ...registered, active: true });
+
+    expect(calls.map((call) => [call.method, new URL(call.url).pathname, call.body])).toEqual([
+      ["PATCH", `/publish/builds/${registered.id}`, JSON.stringify({ active: false })],
+      ["PATCH", `/publish/builds/${registered.id}`, JSON.stringify({ active: true })],
+    ]);
+    expect(events).toContain(`success:Deactivated build ${registered.id}`);
+    expect(events).toContain(`success:Activated build ${registered.id}`);
+  });
+
+  it("reports an unknown build id as a failure", async () => {
+    const { server } = makeServer([], { build: null });
+    await expect(
+      setBuildActive({ id: "missing", active: false, server, run: fakeRun, report: () => {} }),
+    ).rejects.toThrow("404");
   });
 });
 

@@ -252,10 +252,12 @@ applies it again with the same engine and refuses to store anything that does no
 target bundle byte for byte. Devices verify the manifest hash as always.
 
 **Registered builds and fresh installs.** `open-ota build register` records a native build by
-platform, runtime, profile and distribution. CI can use `open-ota build get` to decide whether a
-compatible build already exists without waiting for a device to launch it. Registration also uploads
-the build's embedded bundle so fresh installs can receive delta patches from it. Device verification
-of that fresh-install patch path is still pending; see the [CLI reference](packages/cli/README.md#build-registry).
+platform, runtime, profile, distribution and channel. CI can use `open-ota build get` to decide
+whether a compatible build already exists without waiting for a device to launch it. A build that
+was pulled or rejected can be taken out of that decision with `open-ota build deactivate`; its
+record and bundle stay. Registration also uploads the build's embedded bundle so fresh installs can
+receive delta patches from it. Device verification of that fresh-install patch path is still
+pending; see the [CLI reference](packages/cli/README.md#build-registry).
 
 **Retention.** A sweep runs nightly (`17 3 * * *` UTC) and can be run from the dashboard API with
 `POST /admin/gc`. It deletes bundles, assets and patches that nothing retained references. Retained

@@ -118,6 +118,24 @@ const buildFlags = {
     Flag.map(Option.getOrUndefined),
   ),
 };
+const buildGetFlags = {
+  ...buildFlags,
+  includeInactive: Flag.boolean("include-inactive").pipe(
+    Flag.withDefault(false),
+    Flag.withDescription("Also match deactivated builds"),
+  ),
+};
+const buildIdFlags = {
+  url: common.url,
+  token: common.token,
+  project: common.project,
+  verbose: common.verbose,
+  json: common.json,
+  id: Flag.string("id").pipe(
+    Flag.withSchema(Schema.String.check(Schema.isPattern(/\S/, { message: "Build id must not be empty" }))),
+    Flag.withDescription("Id of a registered build, as returned by build register or build get"),
+  ),
+};
 const buildRegisterFlags = {
   ...buildFlags,
   manifest: Flag.string("manifest").pipe(
@@ -170,7 +188,9 @@ export type CommandInput =
   | (FlagValues<typeof doctorFlags> & { command: "doctor" })
   | (FlagValues<typeof initFlags> & { command: "init" })
   | (FlagValues<typeof buildRegisterFlags> & { command: "build-register" })
-  | (FlagValues<typeof buildFlags> & { command: "build-get" })
+  | (FlagValues<typeof buildGetFlags> & { command: "build-get" })
+  | (FlagValues<typeof buildIdFlags> & { command: "build-activate" })
+  | (FlagValues<typeof buildIdFlags> & { command: "build-deactivate" })
   | (FlagValues<typeof patchesFlags> & { command: "patches" });
 
 export const makeCommand = <E, R>(handle: (input: CommandInput) => Effect.Effect<void, E, R>) => {
@@ -246,7 +266,7 @@ export const makeCommand = <E, R>(handle: (input: CommandInput) => Effect.Effect
   );
   const buildGet = Command.make(
     "get",
-    buildFlags,
+    buildGetFlags,
     Effect.fn("cli.build.get")(function* (input) {
       yield* handle({ ...input, command: "build-get" });
     }),
@@ -259,9 +279,33 @@ export const makeCommand = <E, R>(handle: (input: CommandInput) => Effect.Effect
       },
     ]),
   );
+  const buildActivate = Command.make(
+    "activate",
+    buildIdFlags,
+    Effect.fn("cli.build.activate")(function* (input) {
+      yield* handle({ ...input, command: "build-activate" });
+    }),
+  ).pipe(Command.withDescription("Make a deactivated build eligible again; safe to repeat"));
+  const buildDeactivate = Command.make(
+    "deactivate",
+    buildIdFlags,
+    Effect.fn("cli.build.deactivate")(function* (input) {
+      yield* handle({ ...input, command: "build-deactivate" });
+    }),
+  ).pipe(
+    Command.withDescription(
+      "Stop a build from counting as OTA-eligible without deleting it or its embedded bundle; safe to repeat",
+    ),
+    Command.withExamples([
+      {
+        command: "open-ota build deactivate --id 8f1c4d2e-0a5b-4c7d-9e3f-1a2b3c4d5e6f",
+        description: "A store submission was rejected or the build was pulled",
+      },
+    ]),
+  );
   const build = Command.make("build").pipe(
-    Command.withDescription("Register and find native builds"),
-    Command.withSubcommands([buildRegister, buildGet]),
+    Command.withDescription("Register, find, and manage native builds"),
+    Command.withSubcommands([buildRegister, buildGet, buildActivate, buildDeactivate]),
   );
   const patches = Command.make(
     "patches",
