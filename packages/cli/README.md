@@ -48,7 +48,9 @@ open-ota build register --platform ios|android --profile <name> [--distribution 
                         [--channel <name>] --manifest <app.manifest> --bundle <bundle>
                         [--runtime <version>] [--project <dir>]
 open-ota build get --platform ios|android --profile <name> [--distribution store|internal|simulator]
-                   [--channel <name>] [--runtime <version>] [--project <dir>]
+                   [--channel <name>] [--runtime <version>] [--include-inactive] [--project <dir>]
+open-ota build deactivate --id <build-id>
+open-ota build activate --id <build-id>
 open-ota --help
 ```
 
@@ -83,8 +85,20 @@ current project's runtime version. The command returns successfully when no buil
 result contains `"build": null`, which makes it suitable for deciding between an OTA and a native
 build in CI.
 
+The channel is a compatibility constraint, not a label: a build only receives updates on the channel
+baked into it, so CI should always pass `--channel` when deciding whether an OTA update is enough.
+Omitting it matches builds on any channel, like the EAS build list does.
+
 Register builds only after the delivery step your workflow considers successful. For production,
-that normally means after the store submission succeeds.
+that normally means after the store submission succeeds. Registering the same build again, for
+example after a resubmission, updates its record in place and does not upload the bundle twice.
+
+A registered build proves a compatible artifact was delivered, not that it is still available. When
+a submission is rejected or a build is pulled, `build deactivate --id <build-id>` keeps the record
+and its embedded bundle, so existing installs still get delta patches and retention still protects
+the bundle, but `build get` stops returning it. `build activate` reverses that, and so does
+registering the build again. Both are safe to repeat. Pass `--include-inactive` to `build get` to
+see the newest matching build regardless of state; every result carries an `active` field.
 
 ### Patching fresh installs
 
@@ -160,7 +174,8 @@ npx open-ota build get --platform ios --profile production --channel production 
 
 The publish object contains `command`, `server`, `branch`, `message`, `groupId`, and `updates` (each with
 `id`, `platform`, and `runtimeVersion`). Publish results also include `rolloutPercent`.
-Build commands return `command`, `server`, and `build`; a lookup uses `null` when no build matches.
+Build commands return `command`, `server`, and `build`; a lookup uses `null` when no build matches,
+and every build carries `active`.
 Progress remains on stderr. Fatal errors exit with status 1 and do not write a result object;
 optional patch failures still return a successful result.
 

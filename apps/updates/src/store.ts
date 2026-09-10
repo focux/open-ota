@@ -6,7 +6,7 @@ import {
   Percent,
   StoredAsset,
   type BundleUpdate,
-  type Distribution,
+  Distribution,
   Platform,
   type PlatformUpdateInput,
   type PublishGroupInput,
@@ -42,6 +42,9 @@ export interface Build {
   readonly distribution: Distribution;
   readonly channel: string | undefined;
   readonly launchAssetHash: string;
+  // Whether CI may treat this build as proof that an OTA update is enough.
+  // Deactivated builds keep their bundle for retention and patch bases.
+  readonly active: boolean;
 }
 
 export interface BuildQuery {
@@ -50,6 +53,7 @@ export interface BuildQuery {
   readonly profile: string;
   readonly distribution: Distribution;
   readonly channel: string | undefined;
+  readonly includeInactive: boolean;
 }
 
 export interface PatchBasesQuery extends SelectionQuery {
@@ -213,8 +217,11 @@ export interface UpdateStoreShape {
   readonly recentLaunchAssets: (
     query: SelectionQuery,
   ) => Effect.Effect<ReadonlyArray<LaunchAssetRef>, StorageError>;
+  // Registering an embedded update id again updates and reactivates its build.
   readonly registerBuild: (build: Build) => Effect.Effect<Build, BadRequest | StorageError>;
   readonly findBuild: (query: BuildQuery) => Effect.Effect<Build | null, StorageError>;
+  // Flips a build's eligibility; null when no build has that id.
+  readonly setBuildActive: (id: string, active: boolean) => Effect.Effect<Build | null, StorageError>;
   readonly patchBases: (query: PatchBasesQuery) => Effect.Effect<ReadonlyArray<PatchBase>, StorageError>;
   readonly patchesToward: (targetHash: string) => Effect.Effect<ReadonlyArray<PatchToward>, StorageError>;
   readonly updateById: (id: string) => Effect.Effect<Update | null, StorageError>;
@@ -316,6 +323,34 @@ export const previousBundle = (history: ReadonlyArray<Update>): BundleUpdate | n
   return history.slice(1).find((u): u is BundleUpdate => u.kind === "bundle" && u.launchAsset.hash !== currentHash) ?? null;
 };
 const decodeGroupRows = Schema.decodeUnknownEffect(Schema.Array(GroupRow));
+
+const buildColumns = "id, embedded_update_id, platform, runtime_version, profile, distribution, channel, launch_asset_hash, active";
+const BuildRow = Schema.Struct({
+  id: Schema.String,
+  embedded_update_id: Schema.String,
+  platform: Platform,
+  runtime_version: Schema.String,
+  profile: Schema.String,
+  distribution: Distribution,
+  channel: Schema.NullOr(Schema.String),
+  launch_asset_hash: Schema.String,
+  active: Schema.Int,
+});
+const buildRows = <E, R>(query: Effect.Effect<ReadonlyArray<unknown>, E, R>): Effect.Effect<ReadonlyArray<Build>, E | StorageError, R> =>
+  query.pipe(
+    storedRows(BuildRow),
+    Effect.map((rows) => rows.map((row) => ({
+      id: row.id,
+      embeddedUpdateId: row.embedded_update_id,
+      platform: row.platform,
+      runtimeVersion: row.runtime_version,
+      profile: row.profile,
+      distribution: row.distribution,
+      channel: row.channel ?? undefined,
+      launchAssetHash: row.launch_asset_hash,
+      active: row.active === 1,
+    }))),
+  );
 
 const updateColumns = `u.id, u.group_id, g.branch_name, u.platform, u.runtime_version, u.launch_asset, u.assets,
                u.expo_config, u.rollout_percent, u.rollback_to_embedded, u.created_at`;
@@ -533,78 +568,44 @@ function makeSqlStore() {
       }
       const now = DateTime.formatIso(yield* DateTime.now);
       const registered = yield* sql`
-        INSERT INTO builds (id, embedded_update_id, platform, runtime_version, launch_asset_hash, created_at, profile, distribution, channel)
-        VALUES (${build.id}, ${build.embeddedUpdateId}, ${build.platform}, ${build.runtimeVersion}, ${build.launchAssetHash}, ${now}, ${build.profile}, ${build.distribution}, ${build.channel ?? null})
+        INSERT INTO builds (id, embedded_update_id, platform, runtime_version, launch_asset_hash, created_at, profile, distribution, channel, active)
+        VALUES (${build.id}, ${build.embeddedUpdateId}, ${build.platform}, ${build.runtimeVersion}, ${build.launchAssetHash}, ${now}, ${build.profile}, ${build.distribution}, ${build.channel ?? null}, 1)
         ON CONFLICT (embedded_update_id) DO UPDATE SET
           platform = excluded.platform,
           runtime_version = excluded.runtime_version,
           launch_asset_hash = excluded.launch_asset_hash,
           profile = excluded.profile,
           distribution = excluded.distribution,
-          channel = excluded.channel
-        RETURNING id, embedded_update_id, platform, runtime_version, profile, distribution, channel, launch_asset_hash
-      `.pipe(
-        Effect.mapError(storageFail("Could not register the build.")),
-        storedRows(Schema.Struct({
-          id: Schema.String,
-          embedded_update_id: Schema.String,
-          platform: Platform,
-          runtime_version: Schema.String,
-          profile: Schema.String,
-          distribution: Schema.Literals(["store", "internal", "simulator"]),
-          channel: Schema.NullOr(Schema.String),
-          launch_asset_hash: Schema.String,
-        })),
-      );
-      const row = registered[0]!;
-      return {
-        id: row.id,
-        embeddedUpdateId: row.embedded_update_id,
-        platform: row.platform,
-        runtimeVersion: row.runtime_version,
-        profile: row.profile,
-        distribution: row.distribution,
-        channel: row.channel ?? undefined,
-        launchAssetHash: row.launch_asset_hash,
-      };
+          channel = excluded.channel,
+          active = 1
+        RETURNING ${sql.literal(buildColumns)}
+      `.pipe(Effect.mapError(storageFail("Could not register the build.")), buildRows);
+      return registered[0]!;
     });
 
     const findBuild = Effect.fn("UpdateStore.findBuild")(function* (query: BuildQuery) {
       const channel = query.channel ?? null;
       const rows = yield* sql`
-        SELECT id, embedded_update_id, platform, runtime_version, profile, distribution, channel, launch_asset_hash
+        SELECT ${sql.literal(buildColumns)}
         FROM builds
         WHERE platform = ${query.platform}
           AND runtime_version = ${query.runtimeVersion}
           AND profile = ${query.profile}
           AND distribution = ${query.distribution}
           AND (${channel} IS NULL OR channel = ${channel})
+          AND (${query.includeInactive ? 1 : 0} = 1 OR active = 1)
         ORDER BY created_at DESC, id DESC
         LIMIT 1
-      `.pipe(
-        Effect.mapError(storageFail("Could not find the build.")),
-        storedRows(Schema.Struct({
-          id: Schema.String,
-          embedded_update_id: Schema.String,
-          platform: Platform,
-          runtime_version: Schema.String,
-          profile: Schema.String,
-          distribution: Schema.Literals(["store", "internal", "simulator"]),
-          channel: Schema.NullOr(Schema.String),
-          launch_asset_hash: Schema.String,
-        })),
-      );
-      const row = rows[0];
-      return row === undefined ? null : {
-        id: row.id,
-        embeddedUpdateId: row.embedded_update_id,
-        platform: row.platform,
-        runtimeVersion: row.runtime_version,
-        profile: row.profile,
-        distribution: row.distribution,
-        channel: row.channel ?? undefined,
-        launchAssetHash: row.launch_asset_hash,
-      };
+      `.pipe(Effect.mapError(storageFail("Could not find the build.")), buildRows);
+      return rows[0] ?? null;
+    });
+
+    const setBuildActive = Effect.fn("UpdateStore.setBuildActive")(function* (id: string, active: boolean) {
+      const rows = yield* sql`
+        UPDATE builds SET active = ${active ? 1 : 0} WHERE id = ${id}
+        RETURNING ${sql.literal(buildColumns)}
+      `.pipe(Effect.mapError(storageFail("Could not update the build.")), buildRows);
+      return rows[0] ?? null;
     });
 
     // Fleet first, by how many devices run each bundle, then the embedded
@@ -1042,6 +1043,7 @@ function makeSqlStore() {
       recentLaunchAssets,
       registerBuild,
       findBuild,
+      setBuildActive,
       patchBases,
       patchesToward,
       updateById,
@@ -1378,7 +1380,7 @@ function makeMemoryStore(): UpdateStoreShape {
           return yield* Effect.fail(new BadRequest({ message: `Assets not uploaded: ${input.launchAssetHash}` }));
         }
         const existing = [...builds.values()].find((build) => build.embeddedUpdateId === input.embeddedUpdateId);
-        const build = existing === undefined ? input : { ...input, id: existing.id };
+        const build = { ...input, id: existing?.id ?? input.id, active: true };
         builds.set(build.id, build);
         return build;
       }),
@@ -1388,8 +1390,17 @@ function makeMemoryStore(): UpdateStoreShape {
         build.runtimeVersion === query.runtimeVersion &&
         build.profile === query.profile &&
         build.distribution === query.distribution &&
-        (query.channel === undefined || build.channel === query.channel)
+        (query.channel === undefined || build.channel === query.channel) &&
+        (query.includeInactive || build.active)
       ) ?? null),
+    setBuildActive: (id, active) =>
+      Effect.sync(() => {
+        const existing = builds.get(id);
+        if (existing === undefined) return null;
+        const build = { ...existing, active };
+        builds.set(id, build);
+        return build;
+      }),
     patchBases: (query) =>
       Effect.sync(() => {
         const hashOf = (updateId: string | undefined) => {

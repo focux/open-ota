@@ -48,7 +48,10 @@ const BuildQuery = Schema.Struct({
   profile: Runtime,
   distribution: Distribution,
   channel: Schema.optional(Runtime),
+  includeInactive: Schema.optional(Schema.Literals(["true", "false"])),
 });
+const BuildIdParam = Schema.Struct({ id: Schema.String.check(Schema.isNonEmpty()) });
+const BuildActivation = Schema.Struct({ active: Schema.Boolean });
 const MissingInput = Schema.Struct({ hashes: Schema.Array(Schema.String) });
 const encoder = new TextEncoder();
 
@@ -405,6 +408,7 @@ export const routes = HttpRouter.use(
             distribution: input.distribution,
             channel: input.channel,
             launchAssetHash: input.launchAsset.hash,
+            active: true,
           };
           return json({ build: yield* store.registerBuild(build) }, 201);
         })(),
@@ -421,7 +425,24 @@ export const routes = HttpRouter.use(
             profile: query.profile,
             distribution: query.distribution,
             channel: query.channel,
+            includeInactive: query.includeInactive === "true",
           });
+          return json({ build });
+        })(),
+      ),
+    );
+
+    // Deactivating keeps the record and its bundle; only `findBuild` stops
+    // returning it by default. Registering the build again reactivates it.
+    const setBuildActive = handle(
+      authorized(
+        Effect.fn("Updates.setBuildActive")(function* () {
+          const { id } = yield* HttpRouter.schemaParams(BuildIdParam).pipe(badRequestOn("Invalid build id."));
+          const input = yield* HttpServerRequest.schemaBodyJson(BuildActivation).pipe(
+            Effect.mapError((error) => new BadRequest({ message: `Invalid build activation: ${error.message}` })),
+          );
+          const build = yield* store.setBuildActive(id, input.active);
+          if (build === null) return yield* Effect.fail(new NotFound({ message: "Unknown build." }));
           return json({ build });
         })(),
       ),
@@ -449,6 +470,7 @@ export const routes = HttpRouter.use(
     yield* router.add("PUT", "/publish/patches/:base/:target", putPatch);
     yield* router.add("POST", "/publish/builds", registerBuild);
     yield* router.add("GET", "/publish/builds", findBuild);
+    yield* router.add("PATCH", "/publish/builds/:id", setBuildActive);
     yield* router.add("POST", "/publish/groups", publishGroup);
   }),
 );

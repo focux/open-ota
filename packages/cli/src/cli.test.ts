@@ -126,6 +126,7 @@ it("returns a registered build through the real nested CLI command", async () =>
     distribution: "store",
     channel: "production",
     launchAssetHash: "A".repeat(43),
+    active: true,
   };
   const server = createServer((req, res) => {
     res.setHeader("content-type", "application/json");

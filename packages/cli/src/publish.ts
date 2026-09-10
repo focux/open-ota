@@ -82,6 +82,13 @@ export interface BuildGetOptions {
   profile: string;
   distribution: "store" | "internal" | "simulator";
   channel: string | undefined;
+  // Deactivated builds are hidden unless asked for.
+  includeInactive: boolean;
+}
+
+export interface BuildActivationOptions {
+  id: string;
+  active: boolean;
 }
 
 export interface BackfillOptions {
@@ -300,7 +307,20 @@ export const getBuild = Effect.fn("build.get")(function* (options: BuildGetOptio
     profile: options.profile,
     distribution: options.distribution,
     channel: options.channel,
+    includeInactive: options.includeInactive,
   });
+});
+
+// A pulled or rejected build stays registered, with its bundle, but stops
+// counting as proof that an OTA update is the right release path.
+export const setBuildActive = Effect.fn("build.setActive")(function* (options: BuildActivationOptions) {
+  const server = yield* Server;
+  const progress = yield* Progress;
+  const verb = options.active ? "Activating" : "Deactivating";
+  yield* progress.report({ type: "start", message: `${verb} build ${options.id}` });
+  const build = yield* server.setBuildActive(options.id, options.active);
+  yield* progress.report({ type: "success", message: `${options.active ? "Activated" : "Deactivated"} build ${build.id}` });
+  return build;
 });
 
 // Computes the patches the newest bundle on a branch is missing: after a build

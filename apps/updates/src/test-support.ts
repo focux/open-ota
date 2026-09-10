@@ -12,6 +12,7 @@ import actorMigration from "../migrations/0006_actor.sql?raw";
 import patchesMigration from "../migrations/0003_patches.sql?raw";
 import deliveryMigration from "../migrations/0007_delivery.sql?raw";
 import buildsMigration from "../migrations/0008_builds.sql?raw";
+import buildActiveMigration from "../migrations/0009_build_active.sql?raw";
 import { loadBsdiff } from "@open-ota/bsdiff/node";
 import { adminRoutes } from "./admin.ts";
 import { AssetStore } from "./assets.ts";
@@ -39,7 +40,7 @@ export const sqliteDatabase = () => {
   const migrated = Layer.effectDiscard(
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
-      for (const statement of `${initMigration}${devicesMigration}${patchesMigration}${failuresMigration}${geoMigration}${actorMigration}${deliveryMigration}${buildsMigration}`.split(";").map((s: string) => s.trim()).filter(Boolean)) {
+      for (const statement of `${initMigration}${devicesMigration}${patchesMigration}${failuresMigration}${geoMigration}${actorMigration}${deliveryMigration}${buildsMigration}${buildActiveMigration}`.split(";").map((s: string) => s.trim()).filter(Boolean)) {
         yield* sql.unsafe(statement);
       }
     }),

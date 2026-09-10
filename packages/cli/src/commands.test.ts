@@ -120,8 +120,25 @@ describe("command validation", () => {
       profile: "preview",
       distribution: "internal",
       runtime: undefined,
+      includeInactive: false,
       json: true,
     });
+    expect(await parseCommand([
+      "build", "get", "--platform", "ios", "--profile", "production", "--include-inactive",
+    ], env)).toMatchObject({ command: "build-get", includeInactive: true });
+  });
+
+  it("parses build activation by id", async () => {
+    expect(await parseCommand(["build", "deactivate", "--id", "build-1"], env)).toMatchObject({
+      command: "build-deactivate",
+      id: "build-1",
+    });
+    expect(await parseCommand(["build", "activate", "--id", "build-1", "--json"], env)).toMatchObject({
+      command: "build-activate",
+      id: "build-1",
+      json: true,
+    });
+    await expect(parseCommand(["build", "deactivate"], env)).rejects.toThrow();
   });
 
   it("generates completions without dispatching a publish", async () => {

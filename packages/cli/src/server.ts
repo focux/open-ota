@@ -47,6 +47,7 @@ const Build = Schema.Struct({
   distribution: Schema.Literals(["store", "internal", "simulator"]),
   channel: Schema.optionalKey(Schema.String),
   launchAssetHash: AssetHash,
+  active: Schema.Boolean,
 });
 export type Build = typeof Build.Type;
 const BuildResult = Schema.Struct({ build: Schema.NullOr(Build) });
@@ -113,7 +114,9 @@ export class Server extends Context.Service<
       profile: string;
       distribution: Build["distribution"];
       channel: string | undefined;
+      includeInactive: boolean;
     }): Effect.Effect<Build | null, CliFailure>;
+    setBuildActive(id: string, active: boolean): Effect.Effect<Build, CliFailure>;
   }
 >()("cli/Server") {
   static readonly layer = (url: string, token: Redacted.Redacted<string>) =>
@@ -252,10 +255,19 @@ export class Server extends Context.Service<
                   profile: query.profile,
                   distribution: query.distribution,
                   ...(query.channel === undefined ? {} : { channel: query.channel }),
+                  ...(query.includeInactive ? { includeInactive: "true" } : {}),
                 }),
               ),
             );
             const result = yield* HttpClientResponse.schemaBodyJson(BuildResult)(response).pipe(Effect.mapError(invalidResponse));
+            return result.build;
+          }),
+          setBuildActive: Effect.fn("server.setBuildActive")(function* (id, active) {
+            const response = yield* request(
+              HttpClientRequest.patch(`/publish/builds/${encodeURIComponent(id)}`).pipe(HttpClientRequest.bodyJsonUnsafe({ active })),
+            );
+            const result = yield* HttpClientResponse.schemaBodyJson(BuildResult)(response).pipe(Effect.mapError(invalidResponse));
+            if (result.build === null) return yield* new CliFailure({ message: "The server did not return the updated build." });
             return result.build;
           }),
         });

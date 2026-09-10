@@ -279,6 +279,7 @@ describe.each(stores)("delta patches over the %s store", (_, store) => {
         distribution: "store",
         channel: "production",
         launchAssetHash: embeddedHash,
+        active: true,
       },
     });
     const found = await authed("/publish/builds?platform=ios&runtime=rt-1&profile=production&distribution=store&channel=production");

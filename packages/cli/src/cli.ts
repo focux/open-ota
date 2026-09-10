@@ -11,7 +11,7 @@ import { initialize } from "./setup.ts";
 import { Processes } from "./expo.ts";
 import { Progress } from "./output.ts";
 import { Differ } from "./patches.ts";
-import { backfillPatches, getBuild, publish, registerBuild, rollbackToEmbedded } from "./publish.ts";
+import { backfillPatches, getBuild, publish, registerBuild, rollbackToEmbedded, setBuildActive } from "./publish.ts";
 import { Server } from "./server.ts";
 
 const execute = Effect.fn("cli.execute")(function* (args: CommandInput) {
@@ -75,6 +75,7 @@ const execute = Effect.fn("cli.execute")(function* (args: CommandInput) {
         profile: args.profile,
         distribution: args.distribution,
         channel: args.channel,
+        includeInactive: args.includeInactive,
       });
       yield* progress.close;
       if (args.json) yield* Console.log(JSON.stringify({ command: "build get", server: args.url, build }));
@@ -82,7 +83,20 @@ const execute = Effect.fn("cli.execute")(function* (args: CommandInput) {
         type: "info",
         message: build === null
           ? `No compatible ${args.platform} ${args.profile} build found.`
-          : `Found ${build.platform} ${build.profile} build ${build.id} (runtime ${build.runtimeVersion}).`,
+          : `Found ${build.platform} ${build.profile} build ${build.id} (runtime ${build.runtimeVersion})${build.active ? "" : ", deactivated"}.`,
+      });
+      return;
+    }
+    if (args.command === "build-activate" || args.command === "build-deactivate") {
+      const active = args.command === "build-activate";
+      const build = yield* setBuildActive({ id: args.id, active });
+      yield* progress.close;
+      if (args.json) yield* Console.log(JSON.stringify({ command: `build ${active ? "activate" : "deactivate"}`, server: args.url, build }));
+      else yield* progress.report({
+        type: "info",
+        message: active
+          ? `Build ${build.id} is eligible again. build get will return it for ${build.platform} ${build.profile}.`
+          : `Build ${build.id} is no longer eligible. Its record and embedded bundle stay; build get skips it unless --include-inactive is passed.`,
       });
       return;
     }
