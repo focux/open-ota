@@ -238,9 +238,13 @@ what it runs. When the server has a patch for that pair it answers `226` with th
 anything is off.
 
 **Which bases get a patch.** On publish, the CLI asks the server which bundles are worth diffing
-against, and the server answers from what it knows: the bundles devices on the branch reported
-running in the last 30 days, most devices first, then the most recent publishes. Up to eight
-distinct bundles per platform, and the newest bundle never patches against itself.
+against, and the server answers from what it knows: the bundles devices on that platform and
+runtime reported running in the last 30 days, on any branch, most devices first with the branch's
+own devices breaking ties; then the embedded bundles of registered builds; then the most recent
+publishes on the branch. Devices on other branches count because patches belong to bundles, not
+branches: a group published to `early-access` and later promoted to `production` arrives there with
+its patches already computed for the production fleet. Up to eight distinct bundles per platform,
+and the newest bundle never patches against itself.
 
 **When a patch is kept.** The launch asset is JavaScript, which Cloudflare compresses at the edge,
 so a patch competes with the gzipped bundle, not the raw one. The server measures the compressed

@@ -248,7 +248,8 @@ describe.each(stores)("delta patches over the %s store", (_, store) => {
     for (const [device, current] of [["fleet-1", baseUpdateId], ["fleet-2", baseUpdateId], ["fleet-3", targetUpdateId]] as const) {
       expect((await manifest({ "eas-client-id": device, "expo-current-update-id": current })).status).toBe(200);
     }
-    // Devices on another channel do not count for this branch.
+    // A device on another branch with this runtime counts too: the bundle may
+    // be promoted there, and its patch should be ready when it is.
     expect((await manifest({ "eas-client-id": "elsewhere", "expo-current-update-id": baseUpdateId, "expo-channel-name": "production" })).status).toBe(200);
 
     // A store build ships a third bundle, registered with the id its devices report.
@@ -296,7 +297,7 @@ describe.each(stores)("delta patches over the %s store", (_, store) => {
     const ranked = await authed(`/publish/branches/staging/patch-bases?platform=ios&runtime=rt-1&target=${targetHash}`);
     const { bases } = (await ranked.json()) as typeof initial;
     expect(bases).toEqual([
-      { hash: baseHash, source: "fleet", updateId: baseUpdateId, devices: 2 },
+      { hash: baseHash, source: "fleet", updateId: baseUpdateId, devices: 3 },
       { hash: embeddedHash, source: "embedded", updateId: embeddedId.toLowerCase(), devices: 0 },
     ]);
     expect((await authed(`/publish/branches/staging/patch-bases?platform=ios&runtime=rt-1&target=${targetHash}&limit=1`).then((r) => r.json()) as typeof initial).bases).toHaveLength(1);

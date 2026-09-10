@@ -608,12 +608,18 @@ function makeSqlStore() {
       return rows[0] ?? null;
     });
 
-    // Fleet first, by how many devices run each bundle, then the embedded
-    // bundles of matching builds, then whatever was published last.
+    // Fleet first, by how many devices on this platform and runtime run each
+    // bundle, whatever branch serves them: patches are keyed by bundle, and a
+    // bundle published here may be promoted to another branch, so its patches
+    // should be ready for that branch's devices too. The branch's own devices
+    // break ties. Then the embedded bundles of matching builds, then whatever
+    // was published last on the branch. A bundle counts once even when it is
+    // published under several update ids, as a promotion does.
     const patchBases = Effect.fn("UpdateStore.patchBases")(function* (query: PatchBasesQuery) {
       const fail = storageFail("Could not read the patch bases.");
       const fleet = yield* sql`
-        SELECT h.hash, d.current_update_id AS update_id, COUNT(*) AS devices
+        SELECT h.hash, MAX(d.current_update_id) AS update_id, COUNT(*) AS devices,
+          SUM(CASE WHEN c.branch_name = ${query.branch} THEN 1 ELSE 0 END) AS own
         FROM devices d
         JOIN channels c ON c.name = d.channel
         JOIN (
@@ -622,10 +628,10 @@ function makeSqlStore() {
           UNION ALL
           SELECT embedded_update_id AS id, launch_asset_hash AS hash FROM builds
         ) h ON h.id = d.current_update_id
-        WHERE c.branch_name = ${query.branch} AND d.platform = ${query.platform}
+        WHERE d.platform = ${query.platform}
           AND d.runtime_version = ${query.runtimeVersion} AND d.last_seen_at >= ${query.fleetSince}
-        GROUP BY h.hash, d.current_update_id ORDER BY devices DESC, h.hash LIMIT ${query.limit}
-      `.pipe(Effect.mapError(fail), storedRows(Schema.Struct({ hash: Schema.String, update_id: Schema.String, devices: Schema.Int })));
+        GROUP BY h.hash ORDER BY devices DESC, own DESC, h.hash LIMIT ${query.limit}
+      `.pipe(Effect.mapError(fail), storedRows(Schema.Struct({ hash: Schema.String, update_id: Schema.String, devices: Schema.Int, own: Schema.Int })));
       const embedded = yield* sql`
         SELECT embedded_update_id AS update_id, launch_asset_hash AS hash FROM builds
         WHERE platform = ${query.platform} AND runtime_version = ${query.runtimeVersion}
@@ -1409,19 +1415,27 @@ function makeMemoryStore(): UpdateStoreShape {
           if (update !== undefined) return update.kind === "bundle" ? update.launchAsset.hash : undefined;
           return [...builds.values()].find((build) => build.embeddedUpdateId === updateId)?.launchAssetHash;
         };
-        const fleet = new Map<string, PatchBase>();
+        // Same rule as the SQL store: every branch's devices on this platform
+        // and runtime, one row per bundle, the branch's own devices as tiebreak.
+        const fleet = new Map<string, { hash: string; updateId: string; devices: number; own: number }>();
         for (const device of devices.values()) {
+          const branch = channels.get(device.channel)?.branch;
           if (
-            channels.get(device.channel)?.branch !== query.branch ||
+            branch === undefined ||
             device.platform !== query.platform ||
             device.runtimeVersion !== query.runtimeVersion ||
-            device.lastSeenAt < query.fleetSince
+            device.lastSeenAt < query.fleetSince ||
+            device.currentUpdateId === undefined
           ) continue;
           const hash = hashOf(device.currentUpdateId);
           if (hash === undefined) continue;
-          const key = `${hash}/${device.currentUpdateId}`;
-          const current = fleet.get(key) ?? { hash, source: "fleet" as const, updateId: device.currentUpdateId ?? null, devices: 0 };
-          fleet.set(key, { ...current, devices: current.devices + 1 });
+          const current = fleet.get(hash) ?? { hash, updateId: device.currentUpdateId, devices: 0, own: 0 };
+          fleet.set(hash, {
+            hash,
+            updateId: device.currentUpdateId > current.updateId ? device.currentUpdateId : current.updateId,
+            devices: current.devices + 1,
+            own: current.own + (branch === query.branch ? 1 : 0),
+          });
         }
         const embeddedBases = [...builds.values()]
           .filter((row) => row.platform === query.platform && row.runtimeVersion === query.runtimeVersion)
@@ -1434,7 +1448,9 @@ function makeMemoryStore(): UpdateStoreShape {
               : [],
           );
         return mergeBases(query, [
-          ...[...fleet.values()].sort((a, b) => b.devices - a.devices || a.hash.localeCompare(b.hash)),
+          ...[...fleet.values()]
+            .sort((a, b) => b.devices - a.devices || b.own - a.own || a.hash.localeCompare(b.hash))
+            .map((row) => ({ hash: row.hash, source: "fleet" as const, updateId: row.updateId, devices: row.devices })),
           ...embeddedBases,
           ...recent,
         ]);
