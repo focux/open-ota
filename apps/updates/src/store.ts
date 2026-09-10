@@ -185,9 +185,6 @@ export interface UpdateFigures {
   readonly served: number;
   // Devices that crashed on it at launch and rolled back.
   readonly faulty: number;
-  // Of `running`, devices whose last check-in was on a channel that is not
-  // linked to this update's branch: they took it, then moved.
-  readonly elsewhere: number;
   // Devices on this platform and runtime checking in on a channel linked to
   // the update's branch: the devices the update can reach.
   readonly population: number;
@@ -831,22 +828,17 @@ function makeSqlStore() {
     const updateFigures = Effect.fn("UpdateStore.updateFigures")(function* (list: ReadonlyArray<Update>) {
       if (list.length === 0) return [];
       const fail = storageFail("Could not read the update figures.");
-      const BranchCount = Schema.Struct({ update_id: Schema.String, branch: Schema.NullOr(Schema.String), count: Schema.Int });
       const Count = Schema.Struct({ update_id: Schema.String, count: Schema.Int });
       const ids = [...new Set(list.map((update) => update.id))];
       const rollbackIds = list.filter((update) => update.kind === "rollback").map((update) => update.id);
-      // Running rows carry the branch the device's channel is linked to, so
-      // one pass gives both the total and the part that moved elsewhere.
-      const running: Array<typeof BranchCount.Type> = [];
+      const running = new Map<string, number>();
       const served = new Map<string, number>();
       const faulty = new Map<string, number>();
       for (const batch of inBatches(ids)) {
-        running.push(...(yield* sql`
-          SELECT d.current_update_id AS update_id, c.branch_name AS branch, COUNT(*) AS count
-          FROM devices d LEFT JOIN channels c ON c.name = d.channel
-          WHERE d.current_update_id IN ${sql.in(batch)}
-          GROUP BY d.current_update_id, c.branch_name
-        `.pipe(Effect.mapError(fail), storedRows(BranchCount))));
+        for (const row of yield* sql`
+          SELECT current_update_id AS update_id, COUNT(*) AS count FROM devices
+          WHERE current_update_id IN ${sql.in(batch)} GROUP BY current_update_id
+        `.pipe(Effect.mapError(fail), storedRows(Count))) running.set(row.update_id, row.count);
         for (const row of yield* sql`
           SELECT served_update_id AS update_id, COUNT(*) AS count FROM devices
           WHERE served_update_id IN ${sql.in(batch)} GROUP BY served_update_id
@@ -859,12 +851,11 @@ function makeSqlStore() {
       // No device launches a rollback row; the ones it sent back to their
       // embedded JS are the ones running it.
       for (const batch of inBatches(rollbackIds)) {
-        running.push(...(yield* sql`
-          SELECT d.served_update_id AS update_id, c.branch_name AS branch, COUNT(*) AS count
-          FROM devices d LEFT JOIN channels c ON c.name = d.channel
-          WHERE d.served_update_id IN ${sql.in(batch)} AND d.current_update_id = d.embedded_update_id
-          GROUP BY d.served_update_id, c.branch_name
-        `.pipe(Effect.mapError(fail), storedRows(BranchCount))));
+        for (const row of yield* sql`
+          SELECT served_update_id AS update_id, COUNT(*) AS count FROM devices
+          WHERE served_update_id IN ${sql.in(batch)} AND current_update_id = embedded_update_id
+          GROUP BY served_update_id
+        `.pipe(Effect.mapError(fail), storedRows(Count))) running.set(row.update_id, (running.get(row.update_id) ?? 0) + row.count);
       }
       const platforms = [...new Set(list.map((update) => update.platform))];
       const population = new Map<string, number>();
@@ -879,17 +870,13 @@ function makeSqlStore() {
         })));
         for (const row of rows) population.set(`${row.branch}\n${row.platform}\n${row.runtime_version}`, row.count);
       }
-      return list.map((update) => {
-        const rows = running.filter((row) => row.update_id === update.id);
-        return {
-          updateId: update.id,
-          running: rows.reduce((total, row) => total + row.count, 0),
-          served: served.get(update.id) ?? 0,
-          faulty: faulty.get(update.id) ?? 0,
-          elsewhere: rows.filter((row) => row.branch !== update.branch).reduce((total, row) => total + row.count, 0),
-          population: population.get(`${update.branch}\n${update.platform}\n${update.runtimeVersion}`) ?? 0,
-        };
-      });
+      return list.map((update) => ({
+        updateId: update.id,
+        running: running.get(update.id) ?? 0,
+        served: served.get(update.id) ?? 0,
+        faulty: faulty.get(update.id) ?? 0,
+        population: population.get(`${update.branch}\n${update.platform}\n${update.runtimeVersion}`) ?? 0,
+      }));
     });
 
     const metricsOverview = Effect.fn("UpdateStore.metricsOverview")(function* () {
@@ -1385,7 +1372,6 @@ function makeMemoryStore(): UpdateStoreShape {
             running: onUpdate.length,
             served: rows.filter((row) => row.servedUpdateId === update.id).length,
             faulty: [...failures.values()].filter((row) => row.updateId === update.id).length,
-            elsewhere: onUpdate.filter((row) => branchOf(row.channel) !== update.branch).length,
             population: rows.filter(
               (row) =>
                 row.platform === update.platform && row.runtimeVersion === update.runtimeVersion && branchOf(row.channel) === update.branch,

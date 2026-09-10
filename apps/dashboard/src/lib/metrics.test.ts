@@ -82,7 +82,6 @@ describe("adoption", () => {
       faulty: 2,
       // 30 on staging plus 10 on production, both on this build.
       devices: 40,
-      elsewhere: 0,
       // Rollbacks divide by directed devices, so fresh installs that never
       // needed directing cannot dilute them.
       base: 36,
@@ -97,7 +96,6 @@ describe("adoption", () => {
       served: 36,
       faulty: 2,
       devices: 40,
-      elsewhere: 0,
       base: 40,
       basis: "runtime",
       percent: 75,
@@ -112,7 +110,6 @@ describe("adoption", () => {
       served: 36,
       faulty: 2,
       devices: 0,
-      elsewhere: 0,
       base: 0,
       basis: "runtime",
       percent: 0,
@@ -126,7 +123,6 @@ describe("adoption", () => {
         served: 36,
         faulty: 2,
         devices: 0,
-        elsewhere: 0,
         base: 36,
         basis: "directed",
         percent: 83,
@@ -220,7 +216,6 @@ describe("adoption across channels", () => {
       served: 46,
       faulty: 2,
       devices: 40,
-      elsewhere: 0,
       percent: 100,
     })
   })
@@ -232,7 +227,6 @@ describe("adoption across channels", () => {
       served: 36,
       faulty: 2,
       devices: 30,
-      elsewhere: 0,
       percent: 100,
     })
   })
@@ -244,28 +238,31 @@ describe("figuresAdoption", () => {
     running: 3,
     served: 4,
     faulty: 1,
-    elsewhere: 1,
     population: 4,
   }
 
-  it("reads the server's figures and divides only the reached devices by the population", () => {
-    // Three run it, but one moved to another channel: 2 of 4 reached.
+  it("reads the server's figures and divides running by the population", () => {
     expect(figuresAdoption({ ...bundleUpdate, figures })).toEqual({
       running: 3,
       served: 4,
       faulty: 1,
       devices: 4,
-      elsewhere: 1,
       base: 4,
       basis: "runtime",
-      percent: 50,
+      percent: 75,
     })
+  })
+
+  it("caps the share at 100 when devices run it from outside the population", () => {
+    expect(
+      figuresAdoption({ ...bundleUpdate, figures: { ...figures, running: 5 } })
+    ).toMatchObject({ running: 5, percent: 100 })
   })
 
   it("divides a rollback by the devices it directed", () => {
     expect(
       figuresAdoption({ ...update, figures: { ...figures, running: 2 } })
-    ).toMatchObject({ basis: "directed", base: 4, percent: 25 })
+    ).toMatchObject({ basis: "directed", base: 4, percent: 50 })
   })
 
   it("is undefined for an update read without figures", () => {
@@ -293,7 +290,6 @@ describe("combineAdoption", () => {
       served: 72,
       faulty: 4,
       devices: 80,
-      elsewhere: 0,
       // The rollback brings the 36 it directed, the bundle all 40 on its
       // runtime; neither is forced onto the other's denominator.
       base: 76,
@@ -309,7 +305,6 @@ describe("combineAdoption", () => {
       served: 0,
       faulty: 0,
       devices: 0,
-      elsewhere: 0,
       base: 0,
       basis: "runtime",
       percent: 0,

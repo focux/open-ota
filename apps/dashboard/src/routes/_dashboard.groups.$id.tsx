@@ -318,9 +318,7 @@ function UpdateCard({
               hint={
                 update.kind === "rollback"
                   ? "Devices back on their build's embedded JS."
-                  : numbers.elsewhere > 0
-                    ? `Devices launching this update; ${numbers.elsewhere} of them now check in on another channel.`
-                    : "Devices launching this update."
+                  : "Devices launching this update."
               }
             />
             <Figure

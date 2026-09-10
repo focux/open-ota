@@ -15,14 +15,12 @@ const StoredAsset = Schema.Struct({
 
 // Defined by the server once for every view of an update (UpdateFigures in
 // store.ts). `running` counts devices on the update wherever they check in
-// from; `elsewhere` is the part of it now on a channel the update's branch
-// does not serve; `population` is the devices the update can reach.
+// from; `population` is the devices the update's branch can reach.
 const UpdateFigures = Schema.Struct({
   updateId: Schema.String,
   running: Schema.Number,
   served: Schema.Number,
   faulty: Schema.Number,
-  elsewhere: Schema.Number,
   population: Schema.Number,
 })
 
