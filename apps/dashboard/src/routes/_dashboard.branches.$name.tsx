@@ -5,7 +5,12 @@ import { HugeiconsIcon } from "@hugeicons/react"
 import { CloudUploadIcon } from "@hugeicons/core-free-icons"
 
 import { absoluteTime, plural, relativeTime } from "@/lib/format"
-import { adoption, combineAdoption, isCurrentGroup } from "@/lib/metrics"
+import {
+  adoption,
+  combineAdoption,
+  isCurrentGroup,
+  linkedChannels,
+} from "@/lib/metrics"
 import {
   groupsQueryOptions,
   metricsQueryOptions,
@@ -74,6 +79,8 @@ function BranchPage() {
   const channels = (overview.data?.channels ?? []).filter(
     (channel) => channel.branch === name
   )
+  // Adoption is read against the devices on those channels only.
+  const linked = linkedChannels(overview.data?.channels, name)
   const stale = groups.isError && groups.data !== undefined
   const [rollbackOpen, setRollbackOpen] = useState(false)
   // Group id to message, so the rollback rows can name what they replace.
@@ -176,7 +183,7 @@ function BranchPage() {
                     const current = isCurrentGroup(latest, group)
                     const numbers = combineAdoption(
                       group.updates.map((update) =>
-                        adoption(metrics.data, update)
+                        adoption(metrics.data, update, linked)
                       )
                     )
                     return (

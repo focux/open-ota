@@ -1,4 +1,5 @@
 import type {
+  Channel,
   Metrics,
   Platform,
   RuntimeDevices,
@@ -10,6 +11,21 @@ import type {
  * The population a percent is a share of: every device on the runtime, only the
  * devices an update directed, or a mix of both across several updates.
  */
+/**
+ * The channels that point at a branch, which is the population its updates
+ * can reach. Undefined while the overview is still loading, so callers keep
+ * counting every channel rather than showing zero for a moment; an empty list
+ * once loaded means nothing asks for this branch.
+ */
+export function linkedChannels(
+  channels: ReadonlyArray<Channel> | undefined,
+  branch: string
+): ReadonlyArray<string> | undefined {
+  return channels
+    ?.filter((channel) => channel.branch === branch)
+    .map((channel) => channel.name)
+}
+
 export type AdoptionBasis = "runtime" | "directed" | "mixed"
 
 export interface Adoption {
