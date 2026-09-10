@@ -13,7 +13,7 @@ import {
   shortId,
 } from "@/lib/format"
 import {
-  adoption,
+  adoptionOf,
   failuresFor,
   isCurrentGroup,
   linkedChannels,
@@ -278,13 +278,10 @@ function UpdateCard({
   readonly channels: ReadonlyArray<string> | undefined
   readonly index: number
 }) {
-  // Running, served and health are facts about the update, counted wherever a
-  // device reports from. The population and adoption are the branch's own
-  // devices, so a device that took this update and then moved to another
-  // channel is not measured against a fleet it is no longer part of.
-  const facts = adoption(metrics, update)
-  const numbers = adoption(metrics, update, channels)
-  const elsewhere = facts.running - numbers.running
+  // The server defines these: running and served count the update wherever a
+  // device checks in from, the population is the devices its branch can
+  // reach. The metrics fallback only serves an older server.
+  const numbers = adoptionOf(metrics, update, channels)
 
   return (
     <Frame
@@ -317,18 +314,18 @@ function UpdateCard({
           <div className="flex flex-wrap items-end gap-6">
             <Figure
               label="Running"
-              value={facts.running}
+              value={numbers.running}
               hint={
                 update.kind === "rollback"
                   ? "Devices back on their build's embedded JS."
-                  : elsewhere > 0
-                    ? `Devices launching this update, ${elsewhere} of them now on a channel this branch does not serve.`
+                  : numbers.elsewhere > 0
+                    ? `Devices launching this update; ${numbers.elsewhere} of them now check in on another channel.`
                     : "Devices launching this update."
               }
             />
             <Figure
               label="Served"
-              value={facts.served}
+              value={numbers.served}
               hint="Handed it, some awaiting a relaunch."
             />
             <Figure
@@ -338,7 +335,7 @@ function UpdateCard({
             />
             <div className="flex flex-col gap-1">
               <span className="text-xs text-muted-foreground">Health</span>
-              <HealthBadge healthy={facts.running} faulty={facts.faulty} />
+              <HealthBadge healthy={numbers.running} faulty={numbers.faulty} />
             </div>
             <div className="flex flex-col gap-1">
               <span className="text-xs text-muted-foreground">Adoption</span>

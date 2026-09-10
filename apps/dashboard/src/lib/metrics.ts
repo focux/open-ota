@@ -37,6 +37,8 @@ export interface Adoption {
   readonly faulty: number
   /** Devices seen on this platform and runtime version, whatever they run. */
   readonly devices: number
+  /** Of `running`, devices now checking in on a channel outside the population. */
+  readonly elsewhere: number
   /** What `percent` divides by, and which population that is. Read both to label it. */
   readonly base: number
   readonly basis: AdoptionBasis
@@ -126,10 +128,47 @@ export function adoption(
     served,
     faulty: total((entry) => entry.faulty),
     devices,
+    elsewhere: 0,
     base,
     basis,
     percent: percentOf(running, base),
   }
+}
+
+/**
+ * The server's figures for an update, which every page should prefer: they
+ * are defined once, and they count the update wherever devices check in from
+ * while dividing by the devices its branch can reach. Undefined for updates
+ * read without figures, such as the overview's latest rows.
+ */
+export function figuresAdoption(update: Update): Adoption | undefined {
+  const figures = update.figures
+  if (figures === undefined) return undefined
+  const basis: AdoptionBasis =
+    update.kind === "rollback" ? "directed" : "runtime"
+  const base = basis === "directed" ? figures.served : figures.population
+  // A device that moved to another channel is not part of the population, so
+  // it does not count toward the share of it.
+  const reached = figures.running - figures.elsewhere
+  return {
+    running: figures.running,
+    served: figures.served,
+    faulty: figures.faulty,
+    devices: figures.population,
+    elsewhere: figures.elsewhere,
+    base,
+    basis,
+    percent: percentOf(reached, base),
+  }
+}
+
+/** Server figures when the update carries them, else derived from the metrics. */
+export function adoptionOf(
+  metrics: Metrics | undefined,
+  update: Update,
+  channels?: ReadonlyArray<string>
+): Adoption {
+  return figuresAdoption(update) ?? adoption(metrics, update, channels)
 }
 
 /**
@@ -151,9 +190,10 @@ export function combineAdoption(parts: ReadonlyArray<Adoption>): Adoption {
     served: sum((part) => part.served),
     faulty: sum((part) => part.faulty),
     devices: sum((part) => part.devices),
+    elsewhere: sum((part) => part.elsewhere),
     base,
     basis,
-    percent: percentOf(running, base),
+    percent: percentOf(running - sum((part) => part.elsewhere), base),
   }
 }
 
