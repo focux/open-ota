@@ -278,7 +278,13 @@ function UpdateCard({
   readonly channels: ReadonlyArray<string> | undefined
   readonly index: number
 }) {
+  // Running, served and health are facts about the update, counted wherever a
+  // device reports from. The population and adoption are the branch's own
+  // devices, so a device that took this update and then moved to another
+  // channel is not measured against a fleet it is no longer part of.
+  const facts = adoption(metrics, update)
   const numbers = adoption(metrics, update, channels)
+  const elsewhere = facts.running - numbers.running
 
   return (
     <Frame
@@ -311,16 +317,18 @@ function UpdateCard({
           <div className="flex flex-wrap items-end gap-6">
             <Figure
               label="Running"
-              value={numbers.running}
+              value={facts.running}
               hint={
                 update.kind === "rollback"
                   ? "Devices back on their build's embedded JS."
-                  : "Devices launching this update."
+                  : elsewhere > 0
+                    ? `Devices launching this update, ${elsewhere} of them now on a channel this branch does not serve.`
+                    : "Devices launching this update."
               }
             />
             <Figure
               label="Served"
-              value={numbers.served}
+              value={facts.served}
               hint="Handed it, some awaiting a relaunch."
             />
             <Figure
@@ -330,7 +338,7 @@ function UpdateCard({
             />
             <div className="flex flex-col gap-1">
               <span className="text-xs text-muted-foreground">Health</span>
-              <HealthBadge healthy={numbers.running} faulty={numbers.faulty} />
+              <HealthBadge healthy={facts.running} faulty={facts.faulty} />
             </div>
             <div className="flex flex-col gap-1">
               <span className="text-xs text-muted-foreground">Adoption</span>
