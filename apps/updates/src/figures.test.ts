@@ -52,16 +52,16 @@ describe.each(stores)("update figures over the %s store", (_, store) => {
     await checkIn("s1", "staging");
     await checkIn("s2", "staging");
     expect(await figuresOf(staging.groupId)).toEqual({
-      updateId: stagingId, running: 0, served: 2, faulty: 0, elsewhere: 0, population: 2,
+      updateId: stagingId, running: 0, served: 2, faulty: 0, population: 2,
     });
 
-    // One relaunches on it. The other relaunches on it, then moves to the
-    // production channel: still running it, no longer part of staging.
+    // One relaunches on it. The other relaunches on it, then the app moves it
+    // to the production channel: still running it, no longer part of staging.
     await checkIn("s1", "staging", stagingId);
     await checkIn("s2", "staging", stagingId);
     await checkIn("s2", "production", stagingId);
     expect(await figuresOf(staging.groupId)).toEqual({
-      updateId: stagingId, running: 2, served: 1, faulty: 0, elsewhere: 1, population: 1,
+      updateId: stagingId, running: 2, served: 1, faulty: 0, population: 1,
     });
 
     // The group list carries the same figures.
@@ -69,7 +69,7 @@ describe.each(stores)("update figures over the %s store", (_, store) => {
     expect(page.status).toBe(200);
     const { groups } = (await page.json()) as { groups: Array<{ updates: Array<{ figures: unknown }> }> };
     expect(groups[0]!.updates[0]!.figures).toEqual({
-      updateId: stagingId, running: 2, served: 1, faulty: 0, elsewhere: 1, population: 1,
+      updateId: stagingId, running: 2, served: 1, faulty: 0, population: 1,
     });
   });
 
@@ -81,7 +81,7 @@ describe.each(stores)("update figures over the %s store", (_, store) => {
     await checkIn("s1", "staging", "some-other-update");
     await checkIn("s1", "staging", "00000000-0000-4000-8000-000000000000");
     expect(await figuresOf(groupId)).toEqual({
-      updateId: updates[0]!.id, running: 1, served: 1, faulty: 0, elsewhere: 0, population: 1,
+      updateId: updates[0]!.id, running: 1, served: 1, faulty: 0, population: 1,
     });
   });
 });

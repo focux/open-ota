@@ -37,8 +37,6 @@ export interface Adoption {
   readonly faulty: number
   /** Devices seen on this platform and runtime version, whatever they run. */
   readonly devices: number
-  /** Of `running`, devices now checking in on a channel outside the population. */
-  readonly elsewhere: number
   /** What `percent` divides by, and which population that is. Read both to label it. */
   readonly base: number
   readonly basis: AdoptionBasis
@@ -92,8 +90,10 @@ export function runningOn(
 
 // Floored, like the health badge: 100 percent means every device it targets is
 // on it, not that the last few rounded away.
+// Capped: a device can run an update while checking in from outside the
+// population it is divided by, and a share above 100 helps nobody.
 const percentOf = (running: number, base: number): number =>
-  base === 0 ? 0 : Math.floor((running / base) * 100)
+  base === 0 ? 0 : Math.min(100, Math.floor((running / base) * 100))
 
 export function adoption(
   metrics: Metrics | undefined,
@@ -128,7 +128,6 @@ export function adoption(
     served,
     faulty: total((entry) => entry.faulty),
     devices,
-    elsewhere: 0,
     base,
     basis,
     percent: percentOf(running, base),
@@ -147,18 +146,14 @@ export function figuresAdoption(update: Update): Adoption | undefined {
   const basis: AdoptionBasis =
     update.kind === "rollback" ? "directed" : "runtime"
   const base = basis === "directed" ? figures.served : figures.population
-  // A device that moved to another channel is not part of the population, so
-  // it does not count toward the share of it.
-  const reached = figures.running - figures.elsewhere
   return {
     running: figures.running,
     served: figures.served,
     faulty: figures.faulty,
     devices: figures.population,
-    elsewhere: figures.elsewhere,
     base,
     basis,
-    percent: percentOf(reached, base),
+    percent: percentOf(figures.running, base),
   }
 }
 
@@ -190,10 +185,9 @@ export function combineAdoption(parts: ReadonlyArray<Adoption>): Adoption {
     served: sum((part) => part.served),
     faulty: sum((part) => part.faulty),
     devices: sum((part) => part.devices),
-    elsewhere: sum((part) => part.elsewhere),
     base,
     basis,
-    percent: percentOf(running - sum((part) => part.elsewhere), base),
+    percent: percentOf(running, base),
   }
 }
 
