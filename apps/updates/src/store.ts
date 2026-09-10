@@ -173,10 +173,31 @@ export interface MetricsOverview {
   }>;
 }
 
+// What every view of an update shows, defined here once so a group page, a
+// branch table, and an API client cannot disagree about it.
+export interface UpdateFigures {
+  readonly updateId: string;
+  // Devices on this update, wherever they check in from: launching it for a
+  // bundle, back on their build's embedded JS for a rollback.
+  readonly running: number;
+  // Devices the server last handed this update. Above running means
+  // downloaded and awaiting a relaunch.
+  readonly served: number;
+  // Devices that crashed on it at launch and rolled back.
+  readonly faulty: number;
+  // Of `running`, devices whose last check-in was on a channel that is not
+  // linked to this update's branch: they took it, then moved.
+  readonly elsewhere: number;
+  // Devices on this platform and runtime checking in on a channel linked to
+  // the update's branch: the devices the update can reach.
+  readonly population: number;
+}
+
 export interface UpdateStoreShape {
   readonly recordCheck: (check: DeviceCheck) => Effect.Effect<void, StorageError>;
   readonly recordFailures: (failure: UpdateFailure) => Effect.Effect<void, StorageError>;
   readonly metricsOverview: () => Effect.Effect<MetricsOverview, StorageError>;
+  readonly updateFigures: (updates: ReadonlyArray<Update>) => Effect.Effect<ReadonlyArray<UpdateFigures>, StorageError>;
   readonly branchForChannel: (channel: string) => Effect.Effect<string | null, StorageError>;
   readonly listChannels: () => Effect.Effect<ReadonlyArray<Channel>, StorageError>;
   readonly listBranches: () => Effect.Effect<ReadonlyArray<string>, StorageError>;
@@ -807,6 +828,70 @@ function makeSqlStore() {
       }
     });
 
+    const updateFigures = Effect.fn("UpdateStore.updateFigures")(function* (list: ReadonlyArray<Update>) {
+      if (list.length === 0) return [];
+      const fail = storageFail("Could not read the update figures.");
+      const BranchCount = Schema.Struct({ update_id: Schema.String, branch: Schema.NullOr(Schema.String), count: Schema.Int });
+      const Count = Schema.Struct({ update_id: Schema.String, count: Schema.Int });
+      const ids = [...new Set(list.map((update) => update.id))];
+      const rollbackIds = list.filter((update) => update.kind === "rollback").map((update) => update.id);
+      // Running rows carry the branch the device's channel is linked to, so
+      // one pass gives both the total and the part that moved elsewhere.
+      const running: Array<typeof BranchCount.Type> = [];
+      const served = new Map<string, number>();
+      const faulty = new Map<string, number>();
+      for (const batch of inBatches(ids)) {
+        running.push(...(yield* sql`
+          SELECT d.current_update_id AS update_id, c.branch_name AS branch, COUNT(*) AS count
+          FROM devices d LEFT JOIN channels c ON c.name = d.channel
+          WHERE d.current_update_id IN ${sql.in(batch)}
+          GROUP BY d.current_update_id, c.branch_name
+        `.pipe(Effect.mapError(fail), storedRows(BranchCount))));
+        for (const row of yield* sql`
+          SELECT served_update_id AS update_id, COUNT(*) AS count FROM devices
+          WHERE served_update_id IN ${sql.in(batch)} GROUP BY served_update_id
+        `.pipe(Effect.mapError(fail), storedRows(Count))) served.set(row.update_id, row.count);
+        for (const row of yield* sql`
+          SELECT update_id, COUNT(*) AS count FROM device_update_failures
+          WHERE update_id IN ${sql.in(batch)} GROUP BY update_id
+        `.pipe(Effect.mapError(fail), storedRows(Count))) faulty.set(row.update_id, row.count);
+      }
+      // No device launches a rollback row; the ones it sent back to their
+      // embedded JS are the ones running it.
+      for (const batch of inBatches(rollbackIds)) {
+        running.push(...(yield* sql`
+          SELECT d.served_update_id AS update_id, c.branch_name AS branch, COUNT(*) AS count
+          FROM devices d LEFT JOIN channels c ON c.name = d.channel
+          WHERE d.served_update_id IN ${sql.in(batch)} AND d.current_update_id = d.embedded_update_id
+          GROUP BY d.served_update_id, c.branch_name
+        `.pipe(Effect.mapError(fail), storedRows(BranchCount))));
+      }
+      const platforms = [...new Set(list.map((update) => update.platform))];
+      const population = new Map<string, number>();
+      for (const batch of inBatches([...new Set(list.map((update) => update.runtimeVersion))])) {
+        const rows = yield* sql`
+          SELECT c.branch_name AS branch, d.platform, d.runtime_version, COUNT(*) AS count
+          FROM devices d JOIN channels c ON c.name = d.channel
+          WHERE d.platform IN ${sql.in(platforms)} AND d.runtime_version IN ${sql.in(batch)}
+          GROUP BY c.branch_name, d.platform, d.runtime_version
+        `.pipe(Effect.mapError(fail), storedRows(Schema.Struct({
+          branch: Schema.String, platform: Platform, runtime_version: Schema.String, count: Schema.Int,
+        })));
+        for (const row of rows) population.set(`${row.branch}\n${row.platform}\n${row.runtime_version}`, row.count);
+      }
+      return list.map((update) => {
+        const rows = running.filter((row) => row.update_id === update.id);
+        return {
+          updateId: update.id,
+          running: rows.reduce((total, row) => total + row.count, 0),
+          served: served.get(update.id) ?? 0,
+          faulty: faulty.get(update.id) ?? 0,
+          elsewhere: rows.filter((row) => row.branch !== update.branch).reduce((total, row) => total + row.count, 0),
+          population: population.get(`${update.branch}\n${update.platform}\n${update.runtimeVersion}`) ?? 0,
+        };
+      });
+    });
+
     const metricsOverview = Effect.fn("UpdateStore.metricsOverview")(function* () {
       const fail = storageFail("Could not read metrics.");
       const since = DateTime.formatIso(DateTime.subtract(yield* DateTime.now, { minutes: 20 }));
@@ -1027,6 +1112,7 @@ function makeSqlStore() {
       recordCheck,
       recordFailures,
       metricsOverview,
+      updateFigures,
       branchForChannel,
       listChannels,
       listBranches,
@@ -1284,6 +1370,29 @@ function makeMemoryStore(): UpdateStoreShape {
           ),
         };
       }),
+    updateFigures: (list) =>
+      Effect.sync(() =>
+        list.map((update) => {
+          const branchOf = (channel: string) => channels.get(channel)?.branch;
+          const rows = [...devices.values()];
+          const onUpdate = rows.filter((row) =>
+            update.kind === "rollback"
+              ? row.servedUpdateId === update.id && row.currentUpdateId !== undefined && row.currentUpdateId === row.embeddedUpdateId
+              : row.currentUpdateId === update.id,
+          );
+          return {
+            updateId: update.id,
+            running: onUpdate.length,
+            served: rows.filter((row) => row.servedUpdateId === update.id).length,
+            faulty: [...failures.values()].filter((row) => row.updateId === update.id).length,
+            elsewhere: onUpdate.filter((row) => branchOf(row.channel) !== update.branch).length,
+            population: rows.filter(
+              (row) =>
+                row.platform === update.platform && row.runtimeVersion === update.runtimeVersion && branchOf(row.channel) === update.branch,
+            ).length,
+          };
+        }),
+      ),
     branchForChannel: (channel) => Effect.sync(() => channels.get(channel)?.branch ?? null),
     listChannels: () => Effect.sync(() => [...channels.values()].sort((a, b) => a.name.localeCompare(b.name))),
     listBranches: () => Effect.sync(() => [...branches].sort()),

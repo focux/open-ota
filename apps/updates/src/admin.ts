@@ -8,7 +8,7 @@ import { bearer, badRequestOn, handle } from "./http.ts";
 import { BranchName, Percent, Platform, type PublishGroupInput } from "./model.ts";
 import { PatchPolicy, wireSize } from "./patching.ts";
 import { PublishAuth } from "./routes.ts";
-import { UpdateStore, bundleInput, republishInput, type RollbackTarget } from "./store.ts";
+import { UpdateStore, bundleInput, republishInput, type Group, type RollbackTarget } from "./store.ts";
 
 // Delivery numbers cover this many days.
 const deliveryDays = 7;
@@ -94,6 +94,16 @@ export const adminRoutes = HttpRouter.use(
       handle(authorized(store.metricsOverview().pipe(Effect.map((overview) => json(overview)), Effect.withSpan("Admin.metrics")))),
     );
 
+    // Every update goes out with its figures, so no page has to derive them.
+    const withFigures = Effect.fn("Admin.withFigures")(function* (groups: ReadonlyArray<Group>) {
+      const figures = yield* store.updateFigures(groups.flatMap((group) => group.updates));
+      const byId = new Map(figures.map((entry) => [entry.updateId, entry] as const));
+      return groups.map((group) => ({
+        ...group,
+        updates: group.updates.map((update) => ({ ...update, figures: byId.get(update.id) })),
+      }));
+    });
+
     yield* router.add(
       "GET",
       "/admin/branches/:name/groups",
@@ -106,7 +116,7 @@ export const adminRoutes = HttpRouter.use(
               limit: page.limit ?? 50,
               ...(page.before === undefined ? {} : { before: page.before }),
             });
-            return json({ groups });
+            return json({ groups: yield* withFigures(groups) });
           })(),
         ),
       ),
@@ -121,7 +131,7 @@ export const adminRoutes = HttpRouter.use(
             const { id } = yield* HttpRouter.schemaPathParams(Id).pipe(badRequestOn("Invalid group id."));
             const group = yield* store.groupById(id);
             if (group === null) return yield* Effect.fail(new NotFound({ message: "Unknown group." }));
-            return json(group);
+            return json((yield* withFigures([group]))[0]);
           })(),
         ),
       ),

@@ -6,7 +6,7 @@ import { CloudUploadIcon } from "@hugeicons/core-free-icons"
 
 import { absoluteTime, plural, relativeTime } from "@/lib/format"
 import {
-  adoption,
+  adoptionOf,
   combineAdoption,
   isCurrentGroup,
   linkedChannels,
@@ -183,7 +183,7 @@ function BranchPage() {
                     const current = isCurrentGroup(latest, group)
                     const numbers = combineAdoption(
                       group.updates.map((update) =>
-                        adoption(metrics.data, update, linked)
+                        adoptionOf(metrics.data, update, linked)
                       )
                     )
                     return (

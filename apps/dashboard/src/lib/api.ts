@@ -13,6 +13,19 @@ const StoredAsset = Schema.Struct({
   fileExtension: Schema.optionalKey(Schema.String),
 })
 
+// Defined by the server once for every view of an update (UpdateFigures in
+// store.ts). `running` counts devices on the update wherever they check in
+// from; `elsewhere` is the part of it now on a channel the update's branch
+// does not serve; `population` is the devices the update can reach.
+const UpdateFigures = Schema.Struct({
+  updateId: Schema.String,
+  running: Schema.Number,
+  served: Schema.Number,
+  faulty: Schema.Number,
+  elsewhere: Schema.Number,
+  population: Schema.Number,
+})
+
 const updateFields = {
   id: Schema.String,
   groupId: Schema.String,
@@ -21,6 +34,9 @@ const updateFields = {
   runtimeVersion: Schema.String,
   rolloutPercent: Schema.Number,
   createdAt: Schema.String,
+  // Present on updates read through a group; the overview's latest rows and
+  // rollback plans carry none.
+  figures: Schema.optionalKey(UpdateFigures),
 }
 
 const BundleUpdate = Schema.Struct({
@@ -207,6 +223,7 @@ export type StoredAsset = typeof StoredAsset.Type
 export type BundleUpdate = typeof BundleUpdate.Type
 export type Update = typeof Update.Type
 export type Channel = typeof Channel.Type
+export type UpdateFigures = typeof UpdateFigures.Type
 export type Group = typeof Group.Type
 export type Overview = typeof Overview.Type
 export type Metrics = typeof Metrics.Type
