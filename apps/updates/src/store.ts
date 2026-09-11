@@ -960,7 +960,8 @@ function makeSqlStore() {
       const runtimeVersion = query.runtimeVersion ?? null;
       const channel = query.channel ?? null;
       const currentUpdateId = query.currentUpdateId?.toLowerCase() ?? null;
-      const country = query.country ?? null;
+      // Cloudflare's country is an uppercase ISO code; support types either.
+      const country = query.country?.toUpperCase() ?? null;
       const since =
         query.seenWithinMinutes === undefined
           ? null
@@ -1540,6 +1541,7 @@ function makeMemoryStore(): UpdateStoreShape {
             ? undefined
             : DateTime.formatIso(DateTime.subtract(yield* DateTime.now, { minutes: query.seenWithinMinutes }));
         const currentUpdateId = query.currentUpdateId?.toLowerCase();
+        const country = query.country?.toUpperCase();
         return [...devices]
           .map(([clientId, row]) => memoryDeviceRecord(clientId, row))
           .filter(
@@ -1548,7 +1550,7 @@ function makeMemoryStore(): UpdateStoreShape {
               (query.runtimeVersion === undefined || row.runtimeVersion === query.runtimeVersion) &&
               (query.channel === undefined || row.channel === query.channel) &&
               (currentUpdateId === undefined || row.currentUpdateId === currentUpdateId) &&
-              (query.country === undefined || row.country === query.country) &&
+              (country === undefined || row.country === country) &&
               (since === undefined || row.lastSeenAt >= since),
           )
           .sort((a, b) => b.lastSeenAt.localeCompare(a.lastSeenAt) || a.clientId.localeCompare(b.clientId))

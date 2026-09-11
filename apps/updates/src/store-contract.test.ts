@@ -228,7 +228,7 @@ describe.each(stores)("store contract over %s", (_, layer) => {
         // Checks a tick apart share a timestamp, so the client id breaks the tie.
         expect(yield* ids({})).toEqual(["phone", "tablet"]);
         expect(yield* ids({ platform: "android" })).toEqual(["tablet"]);
-        expect(yield* ids({ country: "CA" })).toEqual(["phone"]);
+        expect(yield* ids({ country: "ca" })).toEqual(["phone"]);
         expect(yield* ids({ runtimeVersion: "rt-2", channel: "production" })).toEqual(["tablet"]);
         expect(yield* ids({ platform: "ios", channel: "production" })).toEqual([]);
         expect(yield* ids({ currentUpdateId: updateId })).toEqual(["phone"]);
