@@ -4,6 +4,7 @@ import { Context, DateTime, Effect, Schema } from "effect";
 import { Headers, HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 import { AssetStore } from "./assets.ts";
 import { base64UrlToHex, sha256Base64Url } from "./crypto.ts";
+import { CheckDebounce } from "./debounce.ts";
 import { BadRequest, NotFound, StorageError } from "./errors.ts";
 import { bearer, badRequestOn, handle } from "./http.ts";
 import { Metrics } from "./metrics.ts";
@@ -74,6 +75,7 @@ export const routes = HttpRouter.use(
     const auth = yield* PublishAuth;
     const engine = yield* PatchEngine;
     const policy = yield* PatchPolicy;
+    const debounce = yield* CheckDebounce;
 
     // Bookkeeping runs after the response is sent and never fails the request.
     const afterResponse = Effect.fn("Updates.afterResponse")(function* <E>(...work: ReadonlyArray<Effect.Effect<void, E, RuntimeContext>>) {
@@ -156,20 +158,39 @@ export const routes = HttpRouter.use(
             : store.recordFailures({ clientId, updateIds: failedUpdateIds, fatalError }),
           clientId === undefined
             ? Effect.void
-            : store.recordCheck({
-                clientId,
-                platform: headers["expo-platform"],
-                runtimeVersion: headers["expo-runtime-version"],
-                channel: headers["expo-channel-name"],
-                currentUpdateId: headers["expo-current-update-id"],
-                embeddedUpdateId: headers["expo-embedded-update-id"],
-                servedUpdateId,
-                country,
-                city,
-                decision: decision.kind,
-                reason,
-                fatalError,
-              }),
+            : debounce.once(
+                {
+                  origin,
+                  clientId,
+                  fingerprint: [
+                    headers["expo-platform"],
+                    headers["expo-runtime-version"],
+                    headers["expo-channel-name"],
+                    headers["expo-current-update-id"] ?? "",
+                    headers["expo-embedded-update-id"] ?? "",
+                    servedUpdateId ?? "",
+                    decision.kind,
+                    reason,
+                    country ?? "",
+                    city ?? "",
+                    fatalError ?? "",
+                  ].join("\n"),
+                },
+                store.recordCheck({
+                  clientId,
+                  platform: headers["expo-platform"],
+                  runtimeVersion: headers["expo-runtime-version"],
+                  channel: headers["expo-channel-name"],
+                  currentUpdateId: headers["expo-current-update-id"],
+                  embeddedUpdateId: headers["expo-embedded-update-id"],
+                  servedUpdateId,
+                  country,
+                  city,
+                  decision: decision.kind,
+                  reason,
+                  fatalError,
+                }),
+              ),
           metrics.record({
             event: "check",
             clientId,
