@@ -34,6 +34,7 @@ const anyDevice: DeviceQuery = {
   currentUpdateId: undefined,
   country: undefined,
   seenWithinMinutes: undefined,
+  before: undefined,
   limit: 50,
 };
 
@@ -225,8 +226,12 @@ describe.each(stores)("store contract over %s", (_, layer) => {
         yield* store.recordCheck(check({ clientId: "tablet", platform: "android", channel: "production", runtimeVersion: "rt-2", country: "US" }));
         const ids = (query: Partial<DeviceQuery>) =>
           Effect.map(store.findDevices({ ...anyDevice, ...query }), (rows) => rows.map((row) => row.clientId));
-        // Checks a tick apart share a timestamp, so the client id breaks the tie.
-        expect(yield* ids({})).toEqual(["phone", "tablet"]);
+        // Checks a tick apart share a timestamp, so the client id breaks the
+        // tie, descending like the timestamp so one keyset covers both.
+        expect(yield* ids({})).toEqual(["tablet", "phone"]);
+        expect(yield* ids({ before: "tablet" })).toEqual(["phone"]);
+        expect(yield* ids({ before: "phone" })).toEqual([]);
+        expect(yield* ids({ before: "never-seen" })).toEqual([]);
         expect(yield* ids({ platform: "android" })).toEqual(["tablet"]);
         expect(yield* ids({ country: "ca" })).toEqual(["phone"]);
         expect(yield* ids({ runtimeVersion: "rt-2", channel: "production" })).toEqual(["tablet"]);
@@ -238,6 +243,31 @@ describe.each(stores)("store contract over %s", (_, layer) => {
         expect(yield* ids({ seenWithinMinutes: 10 })).toEqual([]);
         yield* store.recordCheck(check({ clientId: "phone" }));
         expect(yield* ids({ seenWithinMinutes: 10 })).toEqual(["phone"]);
+      }),
+    ));
+
+  it("forgets a device that stopped checking in, with everything about it", () =>
+    run(
+      Effect.gen(function* () {
+        const store = yield* seed;
+        const group = yield* store.publishGroup({ branch: "staging", updates: { ios: bundle() } });
+        const updateId = group.updates[0]!.id;
+        yield* store.recordCheck(check({ clientId: "gone", currentUpdateId: updateId }));
+        yield* store.recordFailures({ clientId: "gone", updateIds: [updateId], fatalError: "Launch failed" });
+        yield* TestClock.adjust("400 days");
+        yield* store.recordCheck(check({ clientId: "here", currentUpdateId: updateId }));
+        const year = DateTime.formatIso(DateTime.subtract(yield* DateTime.now, { days: 365 }));
+
+        expect(yield* store.unseenDevices(year, 10)).toEqual(["gone"]);
+        yield* store.deleteDevices(yield* store.unseenDevices(year, 10));
+        expect(yield* store.deviceById("gone")).toBeNull();
+        expect(yield* store.recentChecks("gone")).toEqual([]);
+        expect(yield* store.unseenDevices(year, 10)).toEqual([]);
+        // The device that is still around keeps everything, and the counts it
+        // is part of no longer carry the one that left.
+        expect(yield* store.deviceById("here")).not.toBeNull();
+        const served = yield* store.latestUpdates({ branch: "staging", platform: "ios", runtimeVersion: "rt-1", limit: 1 });
+        expect((yield* store.updateFigures(served))[0]).toMatchObject({ running: 1, faulty: 0 });
       }),
     ));
 

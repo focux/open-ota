@@ -268,6 +268,9 @@ const DeviceDetail = Schema.Struct({
 
 const DevicesPage = Schema.Struct({ devices: Schema.Array(Device) })
 
+/** Devices per page. A full page means there may be another. */
+export const devicePageSize = 50
+
 /** What support can be told, and search on. Every field narrows the list. */
 export interface DeviceFilters {
   readonly platform?: Platform
@@ -339,9 +342,9 @@ export const api = {
       undefined,
       Group
     ),
-  devices: (filters: DeviceFilters) =>
+  devices: (filters: DeviceFilters, before?: string) =>
     runRequest(
-      `/api/admin/devices?${deviceQuery(filters)}`,
+      `/api/admin/devices?${deviceQuery(filters, before)}`,
       "GET",
       undefined,
       DevicesPage
@@ -415,12 +418,13 @@ export const api = {
 }
 
 /** Only the filters the user actually filled in reach the server. */
-export function deviceQuery(filters: DeviceFilters): string {
-  const params = new URLSearchParams()
+export function deviceQuery(filters: DeviceFilters, before?: string): string {
+  const params = new URLSearchParams({ limit: String(devicePageSize) })
   for (const [name, value] of Object.entries(filters)) {
     const text = typeof value === "number" ? String(value) : value?.trim()
     if (text !== undefined && text !== "") params.set(name, text)
   }
+  if (before !== undefined) params.set("before", before)
   return params.toString()
 }
 

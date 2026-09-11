@@ -1,7 +1,7 @@
 import { useSyncExternalStore } from "react"
 import { infiniteQueryOptions, queryOptions } from "@tanstack/react-query"
 
-import { api, deviceQuery } from "@/lib/api"
+import { api, deviceQuery, devicePageSize } from "@/lib/api"
 import type { DeviceFilters } from "@/lib/api"
 
 /** Every query key in one place, so invalidation cannot drift from the reads. */
@@ -38,11 +38,19 @@ export const groupQueryOptions = (id: string) =>
     queryFn: () => api.group(id),
   })
 
-/** Devices matching a support search, most recently seen first. */
+/**
+ * Devices matching a support search, most recently seen first. Paged on the
+ * device each page ends with, the same keyset the group pages use.
+ */
 export const devicesQueryOptions = (filters: DeviceFilters) =>
-  queryOptions({
+  infiniteQueryOptions({
     queryKey: queryKeys.devices(filters),
-    queryFn: () => api.devices(filters),
+    queryFn: ({ pageParam }) => api.devices(filters, pageParam),
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (page) =>
+      page.devices.length < devicePageSize
+        ? undefined
+        : page.devices[page.devices.length - 1]?.clientId,
   })
 
 /** One device, with the last answers the server gave it. */

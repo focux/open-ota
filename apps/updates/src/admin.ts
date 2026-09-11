@@ -55,6 +55,9 @@ const DeviceSearch = Schema.Struct({
   seenWithinMinutes: Schema.optional(
     Schema.NumberFromString.check(Schema.isInt(), Schema.isBetween({ minimum: 1, maximum: 1440 })),
   ),
+  // The client id the previous page ended on. Same shape as the group pages:
+  // the caller sends back the last row it was given.
+  before: Schema.optional(NonEmpty),
   limit: Schema.optional(Schema.NumberFromString.check(Schema.isInt(), Schema.isBetween({ minimum: 1, maximum: 200 }))),
 });
 const RollbackInput = Schema.Struct({
@@ -142,6 +145,7 @@ export const adminRoutes = HttpRouter.use(
               currentUpdateId: query.currentUpdateId,
               country: query.country,
               seenWithinMinutes: query.seenWithinMinutes,
+              before: query.before,
               limit: query.limit ?? 50,
             });
             return json({ devices });
