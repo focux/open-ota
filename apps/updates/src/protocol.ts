@@ -30,12 +30,41 @@ export const parseFailedUpdateIds = (header: string | undefined): ReadonlyArray<
 };
 export type ManifestHeaders = typeof ManifestHeaders.Type;
 
-export type Decision =
-  | { readonly kind: "manifest"; readonly update: BundleUpdate }
-  | { readonly kind: "rollback"; readonly update: RollbackUpdate }
-  | { readonly kind: "none" };
+// Why a check was answered the way it was. `none` is the answer support has
+// to explain, so every branch that produces one names itself.
+export const NoUpdateReason = Schema.Literals([
+  // The channel the build asks for points at no branch.
+  "unknown-channel",
+  // The branch has nothing published for this platform and runtime version.
+  "no-update-for-runtime",
+  // Outside the newest update's rollout bucket, with nothing older to fall back to.
+  "rollout-excluded",
+  "already-current",
+  // A rollback directive the device has already carried out.
+  "already-embedded",
+]);
+export type NoUpdateReason = typeof NoUpdateReason.Type;
 
-const none: Decision = { kind: "none" };
+export const DecisionReason = Schema.Literals([
+  "manifest",
+  "rollback",
+  "unknown-channel",
+  "no-update-for-runtime",
+  "rollout-excluded",
+  "already-current",
+  "already-embedded",
+]);
+export type DecisionReason = typeof DecisionReason.Type;
+
+export const DecisionKind = Schema.Literals(["manifest", "rollback", "none"]);
+export type DecisionKind = typeof DecisionKind.Type;
+
+export type Decision =
+  | { readonly kind: "manifest"; readonly reason: "manifest"; readonly update: BundleUpdate }
+  | { readonly kind: "rollback"; readonly reason: "rollback"; readonly update: RollbackUpdate }
+  | { readonly kind: "none"; readonly reason: NoUpdateReason };
+
+const none = (reason: NoUpdateReason): Decision => ({ kind: "none", reason });
 
 // `candidates` are the newest published updates first. A partial rollout on the
 // newest one sends devices outside the bucket to the one before it.
@@ -44,21 +73,23 @@ export const decide = Effect.fn("Protocol.decide")(function* (
   headers: ManifestHeaders,
 ) {
   const newest = candidates[0];
-  if (newest === undefined) return none;
+  // The caller knows whether the channel itself was the problem; from here an
+  // empty candidate list only means the branch serves nothing for this build.
+  if (newest === undefined) return none("no-update-for-runtime");
   let chosen: Update | undefined = newest;
   if (newest.rolloutPercent < 100) {
     const clientId = headers["eas-client-id"];
     const bucket = clientId === undefined || clientId === "" ? 100 : yield* rolloutBucket(clientId, newest.id);
     if (bucket >= newest.rolloutPercent) chosen = candidates[1];
   }
-  if (chosen === undefined) return none;
+  if (chosen === undefined) return none("rollout-excluded");
   const current = headers["expo-current-update-id"]?.toLowerCase();
   if (chosen.kind === "rollback") {
     return current !== undefined && current !== "" && current === headers["expo-embedded-update-id"]?.toLowerCase()
-      ? none
-      : ({ kind: "rollback", update: chosen } satisfies Decision);
+      ? none("already-embedded")
+      : ({ kind: "rollback", reason: "rollback", update: chosen } satisfies Decision);
   }
-  return current === chosen.id ? none : ({ kind: "manifest", update: chosen } satisfies Decision);
+  return current === chosen.id ? none("already-current") : ({ kind: "manifest", reason: "manifest", update: chosen } satisfies Decision);
 });
 
 export const manifestJson = (update: BundleUpdate, origin: string) => {

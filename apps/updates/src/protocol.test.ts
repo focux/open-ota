@@ -1,6 +1,6 @@
 import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
-import type { RollbackUpdate } from "./model.ts";
+import type { BundleUpdate, RollbackUpdate } from "./model.ts";
 import { decide, parseFailedUpdateIds, type ManifestHeaders } from "./protocol.ts";
 
 const ids = Array.from({ length: 6 }, (_, i) => `abcdef00-0000-4000-8000-${String(i).padStart(12, "0")}`);
@@ -42,12 +42,40 @@ describe("rollback directives", () => {
     { "expo-embedded-update-id": "embedded" },
     { "expo-current-update-id": "", "expo-embedded-update-id": "" },
   ])("does not infer that a device is embedded from missing ids: %j", async (optional) => {
-    expect(await Effect.runPromise(decide([rollback], { ...required, ...optional }))).toEqual({ kind: "rollback", update: rollback });
+    expect(await Effect.runPromise(decide([rollback], { ...required, ...optional }))).toEqual({ kind: "rollback", reason: "rollback", update: rollback });
   });
 
   it("stops sending the directive once the current id matches embedded", async () => {
     expect(await Effect.runPromise(decide([rollback], {
       ...required, "expo-current-update-id": ids[0]!.toUpperCase(), "expo-embedded-update-id": ids[0],
-    }))).toEqual({ kind: "none" });
+    }))).toEqual({ kind: "none", reason: "already-embedded" });
+  });
+});
+
+describe("decision reasons", () => {
+  const required: ManifestHeaders = {
+    "expo-protocol-version": "1", "expo-platform": "ios",
+    "expo-runtime-version": "rt-1", "expo-channel-name": "staging",
+  };
+  const bundle: BundleUpdate = {
+    kind: "bundle", id: ids[0]!, groupId: "group", branch: "staging", platform: "ios",
+    runtimeVersion: "rt-1", rolloutPercent: 100, createdAt: "2026-09-04T00:00:00.000Z",
+    launchAsset: { hash: "A".repeat(43), key: "bundle", contentType: "application/javascript" },
+    assets: [], expoConfig: {},
+  };
+  const rollback: RollbackUpdate = { ...bundle, kind: "rollback", id: ids[1]! };
+
+  it.each([
+    ["no-update-for-runtime", [], {}],
+    ["already-current", [bundle], { "expo-current-update-id": bundle.id }],
+    ["already-embedded", [rollback], { "expo-current-update-id": ids[2], "expo-embedded-update-id": ids[2] }],
+    ["rollout-excluded", [{ ...bundle, rolloutPercent: 0 }], { "eas-client-id": "device-1" }],
+  ] as const)("answers no update because %s", async (reason, candidates, optional) => {
+    expect(await Effect.runPromise(decide(candidates, { ...required, ...optional }))).toEqual({ kind: "none", reason });
+  });
+
+  it("names the answer it did give", async () => {
+    expect((await Effect.runPromise(decide([bundle], required))).reason).toBe("manifest");
+    expect((await Effect.runPromise(decide([rollback], required))).reason).toBe("rollback");
   });
 });
