@@ -1,6 +1,7 @@
 import { Effect } from "effect";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { sha256Base64Url } from "./crypto.ts";
+import { CheckDebounce } from "./debounce.ts";
 import { makeServer, stores } from "./test-support.ts";
 
 describe.each(stores)("device lookup over the %s store", (_, store) => {
@@ -82,9 +83,44 @@ describe.each(stores)("device lookup over the %s store", (_, store) => {
     expect(await found("?limit=1")).toHaveLength(1);
   });
 
+  it("pages on the device the last page ended with", async () => {
+    const page = async (query: string) =>
+      ((await json(await authed(`/admin/devices${query}`))).devices as Array<{ clientId: string }>).map((row) => row.clientId);
+    const all = await page("");
+    expect(all.length).toBeGreaterThan(1);
+    const first = await page("?limit=1");
+    expect(first).toEqual(all.slice(0, 1));
+    const second = await page(`?limit=1&before=${first[0]}`);
+    expect(second).toEqual(all.slice(1, 2));
+    expect(await page(`?before=${all[all.length - 1]}`)).toEqual([]);
+  });
+
   it("rejects filters it cannot read", async () => {
-    for (const query of ["?platform=windows", "?limit=0", "?limit=nope", "?seenWithinMinutes=0", "?seenWithinMinutes=4000"]) {
+    for (const query of ["?platform=windows", "?limit=0", "?limit=nope", "?seenWithinMinutes=0", "?seenWithinMinutes=4000", "?before="]) {
       expect((await authed(`/admin/devices${query}`)).status).toBe(400);
     }
+  });
+});
+
+describe.each(stores)("debounced check-ins over the %s store", (_, store) => {
+  const server = makeServer(store, undefined, { debounce: CheckDebounce.memory() });
+  afterAll(() => server.dispose());
+  const { authed, manifest } = server;
+  const checks = async () =>
+    ((await (await authed("/admin/devices/device-1")).json()) as { checks: ReadonlyArray<unknown> }).checks;
+
+  it("writes the first check and skips the identical ones behind it", async () => {
+    expect((await manifest({})).status).toBe(200);
+    expect(await checks()).toHaveLength(1);
+    for (let poll = 0; poll < 5; poll++) expect((await manifest({})).status).toBe(200);
+    expect(await checks()).toHaveLength(1);
+  });
+
+  it("writes again as soon as the device says something new", async () => {
+    expect((await manifest({ "expo-current-update-id": "abcdef00-0000-4000-8000-000000000000" })).status).toBe(200);
+    expect(await checks()).toHaveLength(2);
+    // A crash report is part of the check, so it is never the one skipped.
+    expect((await manifest({ "expo-fatal-error": "Launch failed" })).status).toBe(200);
+    expect(await checks()).toHaveLength(3);
   });
 });

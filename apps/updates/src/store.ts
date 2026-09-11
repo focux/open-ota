@@ -132,8 +132,8 @@ export interface DeviceCheck {
   // From Cloudflare's request geolocation.
   readonly country: string | undefined;
   readonly city: string | undefined;
-  // What the server answered and why. Kept per check, not only as the device's
-  // last state, because the answer is the thing support has to explain.
+  // What the server answered and why: the thing support has to explain, so it
+  // is kept per check and not only as the device's last state.
   readonly decision: DecisionKind;
   readonly reason: DecisionReason;
   // What the device reported crashing with on this check, if anything.
@@ -181,6 +181,8 @@ export interface DeviceQuery {
   readonly country: string | undefined;
   // Only devices that checked in this recently.
   readonly seenWithinMinutes: number | undefined;
+  // The client id the previous page ended on, for the keyset below.
+  readonly before: string | undefined;
   readonly limit: number;
 }
 
@@ -250,6 +252,11 @@ export interface UpdateStoreShape {
   readonly recentChecks: (clientId: string) => Effect.Effect<ReadonlyArray<DeviceCheckEntry>, StorageError>;
   // Devices matching every filter given, most recently seen first.
   readonly findDevices: (query: DeviceQuery) => Effect.Effect<ReadonlyArray<DeviceRecord>, StorageError>;
+  // Client ids of devices that stopped checking in before `since`, oldest first.
+  readonly unseenDevices: (since: string, limit: number) => Effect.Effect<ReadonlyArray<string>, StorageError>;
+  // Forgets these devices: their checks, their reported failures, and the rows
+  // themselves. A device that comes back is registered again by its next check.
+  readonly deleteDevices: (clientIds: ReadonlyArray<string>) => Effect.Effect<void, StorageError>;
   readonly metricsOverview: () => Effect.Effect<MetricsOverview, StorageError>;
   readonly updateFigures: (updates: ReadonlyArray<Update>) => Effect.Effect<ReadonlyArray<UpdateFigures>, StorageError>;
   readonly branchForChannel: (channel: string) => Effect.Effect<string | null, StorageError>;
@@ -358,8 +365,8 @@ const toUpdate = (row: typeof UpdateRow.Type): Update => {
 
 const storageFail = (message: string) => (cause: unknown) => new StorageError({ message, cause });
 
-// How many checks each device keeps. Enough to see a pattern across a few
-// launches, small enough that the table stays proportional to the fleet.
+// How many answers each device keeps: enough to see the transitions that
+// explain it, short of being a request log.
 export const recentChecksKept = 20;
 
 // D1 rejects a statement with more than 100 bound parameters, so an `IN (...)`
@@ -855,8 +862,8 @@ function makeSqlStore() {
       const embedded = check.embeddedUpdateId?.toLowerCase() ?? null;
       const served = check.servedUpdateId?.toLowerCase() ?? null;
       const fatalError = check.fatalError ?? null;
-      // The common poll: the same answer as last time, so the newest entry
-      // absorbs it. `IS` rather than `=` so the null columns compare.
+      // The common poll: the same answer as last time, absorbed by the newest
+      // entry. `IS` rather than `=` so null columns compare.
       const repeated = yield* sql`
         UPDATE device_checks SET last_checked_at = ${now}, checks = checks + 1
         WHERE rowid = (
@@ -878,9 +885,8 @@ function makeSqlStore() {
                   ${check.channel}, ${current}, ${embedded}, ${check.decision}, ${check.reason}, ${served},
                   ${fatalError})
         `.pipe(Effect.mapError(fail));
-        // Pruned here rather than by the sweep: the ring is only ever as long
-        // as its own writes make it, and entries written in the same second
-        // keep their order by rowid.
+        // Pruned on write, so the ring is only ever as long as its own writes
+        // make it. Entries within one second keep their order by rowid.
         yield* sql`
           DELETE FROM device_checks WHERE client_id = ${check.clientId} AND rowid NOT IN (
             SELECT rowid FROM device_checks WHERE client_id = ${check.clientId}
@@ -956,27 +962,54 @@ function makeSqlStore() {
     });
 
     const findDevices = Effect.fn("UpdateStore.findDevices")(function* (query: DeviceQuery) {
-      const platform = query.platform ?? null;
-      const runtimeVersion = query.runtimeVersion ?? null;
-      const channel = query.channel ?? null;
-      const currentUpdateId = query.currentUpdateId?.toLowerCase() ?? null;
-      // Cloudflare's country is an uppercase ISO code; support types either.
-      const country = query.country?.toUpperCase() ?? null;
       const since =
         query.seenWithinMinutes === undefined
-          ? null
+          ? undefined
           : DateTime.formatIso(DateTime.subtract(yield* DateTime.now, { minutes: query.seenWithinMinutes }));
+      // Only the filters given become predicates: `(? IS NULL OR col = ?)`
+      // reads better but leaves the planner unable to use any index, which on
+      // this table means scanning the whole fleet.
+      const clauses = [
+        ...(query.platform === undefined ? [] : [sql`platform = ${query.platform}`]),
+        ...(query.runtimeVersion === undefined ? [] : [sql`runtime_version = ${query.runtimeVersion}`]),
+        ...(query.channel === undefined ? [] : [sql`channel = ${query.channel}`]),
+        // Ids arrive in whatever case the client stored them; country is
+        // Cloudflare's uppercase ISO code and support types either.
+        ...(query.currentUpdateId === undefined ? [] : [sql`current_update_id = ${query.currentUpdateId.toLowerCase()}`]),
+        ...(query.country === undefined ? [] : [sql`country = ${query.country.toUpperCase()}`]),
+        ...(since === undefined ? [] : [sql`last_seen_at >= ${since}`]),
+        // The keyset: rows ordered after the last device of the previous page.
+        // An unknown cursor selects nothing, ending the paging.
+        ...(query.before === undefined
+          ? []
+          : [sql`(last_seen_at, client_id) < (SELECT last_seen_at, client_id FROM devices WHERE client_id = ${query.before})`]),
+      ];
       const rows = yield* sql`
         SELECT ${sql.literal(deviceColumns)} FROM devices
-        WHERE (${platform} IS NULL OR platform = ${platform})
-          AND (${runtimeVersion} IS NULL OR runtime_version = ${runtimeVersion})
-          AND (${channel} IS NULL OR channel = ${channel})
-          AND (${currentUpdateId} IS NULL OR current_update_id = ${currentUpdateId})
-          AND (${country} IS NULL OR country = ${country})
-          AND (${since} IS NULL OR last_seen_at >= ${since})
-        ORDER BY last_seen_at DESC, client_id LIMIT ${query.limit}
+        ${clauses.length === 0 ? sql.literal("") : sql`WHERE ${sql.and(clauses)}`}
+        ORDER BY last_seen_at DESC, client_id DESC
+        LIMIT ${query.limit}
       `.pipe(Effect.mapError(storageFail("Could not search devices.")), storedRows(DeviceRow));
       return rows.map(toDeviceRecord);
+    });
+
+    const unseenDevices = Effect.fn("UpdateStore.unseenDevices")(function* (since: string, limit: number) {
+      const rows = yield* sql`
+        SELECT client_id FROM devices WHERE last_seen_at < ${since}
+        ORDER BY last_seen_at, client_id LIMIT ${limit}
+      `.pipe(Effect.mapError(storageFail("Could not find forgotten devices.")), storedRows(Schema.Struct({ client_id: Schema.String })));
+      return rows.map((row) => row.client_id);
+    });
+
+    // Children first: a sweep that stops half way leaves a device row to find
+    // again, never an unreachable check.
+    const deleteDevices = Effect.fn("UpdateStore.deleteDevices")(function* (clientIds: ReadonlyArray<string>) {
+      const fail = storageFail("Could not delete devices.");
+      for (const batch of inBatches(clientIds)) {
+        yield* sql`DELETE FROM device_checks WHERE ${sql.in("client_id", batch)}`.pipe(Effect.mapError(fail));
+        yield* sql`DELETE FROM device_update_failures WHERE ${sql.in("client_id", batch)}`.pipe(Effect.mapError(fail));
+        yield* sql`DELETE FROM devices WHERE ${sql.in("client_id", batch)}`.pipe(Effect.mapError(fail));
+      }
     });
 
     const updateFigures = Effect.fn("UpdateStore.updateFigures")(function* (list: ReadonlyArray<Update>) {
@@ -1255,6 +1288,8 @@ function makeSqlStore() {
       deviceById,
       recentChecks,
       findDevices,
+      unseenDevices,
+      deleteDevices,
       metricsOverview,
       updateFigures,
       branchForChannel,
@@ -1431,6 +1466,13 @@ const mergeCounts = (running: Counts, served: Counts, faulty: Counts): MetricsOv
   );
 };
 
+// Newest check-in first, client id breaking a tie, both descending so one
+// keyset covers them.
+const newestSeenFirst = (
+  a: { readonly lastSeenAt: string; readonly clientId: string },
+  b: { readonly lastSeenAt: string; readonly clientId: string },
+) => b.lastSeenAt.localeCompare(a.lastSeenAt) || b.clientId.localeCompare(a.clientId);
+
 // Two entries the ring should hold as one: everything but when and how often.
 const sameAnswer = (a: DeviceCheckEntry, b: DeviceCheckEntry) =>
   a.platform === b.platform &&
@@ -1542,7 +1584,7 @@ function makeMemoryStore(): UpdateStoreShape {
             : DateTime.formatIso(DateTime.subtract(yield* DateTime.now, { minutes: query.seenWithinMinutes }));
         const currentUpdateId = query.currentUpdateId?.toLowerCase();
         const country = query.country?.toUpperCase();
-        return [...devices]
+        const ordered = [...devices]
           .map(([clientId, row]) => memoryDeviceRecord(clientId, row))
           .filter(
             (row) =>
@@ -1553,8 +1595,33 @@ function makeMemoryStore(): UpdateStoreShape {
               (country === undefined || row.country === country) &&
               (since === undefined || row.lastSeenAt >= since),
           )
-          .sort((a, b) => b.lastSeenAt.localeCompare(a.lastSeenAt) || a.clientId.localeCompare(b.clientId))
-          .slice(0, query.limit);
+          .sort(newestSeenFirst);
+        if (query.before === undefined) return ordered.slice(0, query.limit);
+        // A cursor naming a device that is gone ends the paging, which is what
+        // the row comparison against an empty subquery does in SQL.
+        const cursor = devices.get(query.before);
+        if (cursor === undefined) return [];
+        const key = { lastSeenAt: cursor.lastSeenAt, clientId: query.before };
+        return ordered.filter((row) => newestSeenFirst(row, key) > 0).slice(0, query.limit);
+      }),
+    unseenDevices: (since, limit) =>
+      Effect.sync(() =>
+        [...devices]
+          .map(([clientId, row]) => ({ clientId, lastSeenAt: row.lastSeenAt }))
+          .filter((row) => row.lastSeenAt < since)
+          .sort((a, b) => a.lastSeenAt.localeCompare(b.lastSeenAt) || a.clientId.localeCompare(b.clientId))
+          .slice(0, limit)
+          .map((row) => row.clientId),
+      ),
+    deleteDevices: (clientIds) =>
+      Effect.sync(() => {
+        for (const clientId of clientIds) {
+          devices.delete(clientId);
+          deviceChecks.delete(clientId);
+          for (const [key, failure] of failures) {
+            if (failure.clientId === clientId) failures.delete(key);
+          }
+        }
       }),
     metricsOverview: () =>
       Effect.gen(function* () {

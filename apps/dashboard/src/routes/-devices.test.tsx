@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 import type * as TanStackRouter from "@tanstack/react-router"
 import type { ReactNode } from "react"
 
-import { api } from "@/lib/api"
+import { api, devicePageSize } from "@/lib/api"
 import type { Device, DeviceCheck } from "@/lib/api"
 import { Route as DeviceRoute } from "./_dashboard.devices.$clientId"
 import { Route as DevicesRoute } from "./_dashboard.devices.index"
@@ -84,7 +84,7 @@ describe("the device pages", () => {
         "Nothing to serve: the branch has no update for runtime 3f2a9c11…"
       )
     ).toHaveLength(2)
-    expect(screen.getByText(/Checked 42 times/)).toBeDefined()
+    expect(screen.getByText(/Recorded 42 times/)).toBeDefined()
     // Served and running disagree on the device row, which is its own answer.
     expect(screen.getByText(/Served is ahead of running/)).toBeDefined()
     client.clear()
@@ -108,7 +108,31 @@ describe("the device pages", () => {
       to: "/devices/$clientId",
       params: { clientId: device.clientId },
     })
-    expect(search).toHaveBeenCalledWith({})
+    expect(search).toHaveBeenCalledWith({}, undefined)
+    client.clear()
+  })
+
+  it("asks for the next page starting at the device this one ended with", async () => {
+    vi.spyOn(api, "overview").mockResolvedValue({
+      channels: [],
+      branches: [],
+      latest: [],
+    })
+    const page = Array.from({ length: devicePageSize }, (_, index) => ({
+      ...device,
+      clientId: `device-${index}`,
+    }))
+    const search = vi
+      .spyOn(api, "devices")
+      .mockResolvedValueOnce({ devices: page })
+      .mockResolvedValue({ devices: [] })
+    const Page = DevicesRoute.options.component!
+    const client = await mount(Page)
+
+    await act(async () => {
+      fireEvent.click(await screen.findByRole("button", { name: "Load more" }))
+    })
+    expect(search).toHaveBeenLastCalledWith({}, `device-${devicePageSize - 1}`)
     client.clear()
   })
 
@@ -128,11 +152,10 @@ describe("the device pages", () => {
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "Search" }))
     })
-    expect(search).toHaveBeenLastCalledWith({
-      runtimeVersion: "",
-      currentUpdateId: "",
-      country: "CA",
-    })
+    expect(search).toHaveBeenLastCalledWith(
+      { runtimeVersion: "", currentUpdateId: "", country: "CA" },
+      undefined
+    )
     expect(navigate).not.toHaveBeenCalled()
     client.clear()
   })

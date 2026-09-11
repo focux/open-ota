@@ -1,6 +1,6 @@
 import { useState } from "react"
 import { Link, createFileRoute, useNavigate } from "@tanstack/react-router"
-import { useQuery } from "@tanstack/react-query"
+import { useInfiniteQuery, useQuery } from "@tanstack/react-query"
 import { HugeiconsIcon } from "@hugeicons/react"
 import { Search01Icon, SmartphoneIcon } from "@hugeicons/core-free-icons"
 
@@ -44,9 +44,6 @@ import {
 export const Route = createFileRoute("/_dashboard/devices/")({
   component: DevicesPage,
 })
-
-// The server's own ceiling, so a full page is visibly a full page.
-const pageSize = 50
 
 // "Anything" is absence, which a Select cannot hold as a value.
 const anyValue = "any"
@@ -100,7 +97,7 @@ function DevicesPage() {
   const [clientId, setClientId] = useState("")
 
   const overview = useQuery({ ...overviewQueryOptions, enabled: hydrated })
-  const devices = useQuery({
+  const devices = useInfiniteQuery({
     ...devicesQueryOptions(applied),
     enabled: hydrated,
   })
@@ -110,7 +107,7 @@ function DevicesPage() {
 
   if (isUnreachable(overview.error)) return null
 
-  const rows = devices.data?.devices ?? []
+  const rows = devices.data?.pages.flatMap((page) => page.devices) ?? []
 
   return (
     <>
@@ -273,7 +270,7 @@ function DevicesPage() {
           description={
             devices.isPending
               ? "Loading"
-              : `${plural(rows.length, "device")}${rows.length === pageSize ? " or more" : ""}, most recently seen first`
+              : `${plural(rows.length, "device")}${devices.hasNextPage ? " loaded so far" : ""}, most recently seen first`
           }
         />
         <FramePanel>
@@ -380,6 +377,18 @@ function DevicesPage() {
           )}
         </FramePanel>
       </Frame>
+
+      {devices.hasNextPage && (
+        <div className="flex justify-center">
+          <Button
+            variant="outline"
+            disabled={devices.isFetchingNextPage}
+            onClick={() => devices.fetchNextPage()}
+          >
+            {devices.isFetchingNextPage ? "Loading" : "Load more"}
+          </Button>
+        </div>
+      )}
     </>
   )
 }

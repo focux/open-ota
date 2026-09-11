@@ -14,9 +14,11 @@ import deliveryMigration from "../migrations/0007_delivery.sql?raw";
 import buildsMigration from "../migrations/0008_builds.sql?raw";
 import buildActiveMigration from "../migrations/0009_build_active.sql?raw";
 import deviceChecksMigration from "../migrations/0010_device_checks.sql?raw";
+import deviceSearchMigration from "../migrations/0011_device_search.sql?raw";
 import { loadBsdiff } from "@open-ota/bsdiff/node";
 import { adminRoutes } from "./admin.ts";
 import { AssetStore } from "./assets.ts";
+import { CheckDebounce } from "./debounce.ts";
 import { Delivery } from "./delivery.ts";
 import { Retention, type RetentionPolicy } from "./gc.ts";
 import { Metrics, type MetricEvent } from "./metrics.ts";
@@ -41,7 +43,7 @@ export const sqliteDatabase = () => {
   const migrated = Layer.effectDiscard(
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
-      for (const statement of `${initMigration}${devicesMigration}${patchesMigration}${failuresMigration}${geoMigration}${actorMigration}${deliveryMigration}${buildsMigration}${buildActiveMigration}${deviceChecksMigration}`.split(";").map((s: string) => s.trim()).filter(Boolean)) {
+      for (const statement of `${initMigration}${devicesMigration}${patchesMigration}${failuresMigration}${geoMigration}${actorMigration}${deliveryMigration}${buildsMigration}${buildActiveMigration}${deviceChecksMigration}${deviceSearchMigration}`.split(";").map((s: string) => s.trim()).filter(Boolean)) {
         yield* sql.unsafe(statement);
       }
     }),
@@ -65,7 +67,12 @@ const inlineExecutionContext = Layer.succeed(Cloudflare.Workers.WorkerExecutionC
 export const makeServer = (
   store: () => Layer.Layer<UpdateStore, never, never>,
   assets: Layer.Layer<AssetStore> = AssetStore.memory(),
-  options: { readonly policy?: Partial<PatchPolicyShape>; readonly retention?: Partial<RetentionPolicy> } = {},
+  options: {
+    readonly policy?: Partial<PatchPolicyShape>;
+    readonly retention?: Partial<RetentionPolicy>;
+    // Every check is written unless a suite asks for the debounce.
+    readonly debounce?: Layer.Layer<CheckDebounce>;
+  } = {},
 ) => {
   const events: Array<MetricEvent> = [];
   // Shared by reference so a test can change the sweep's window mid-run.
@@ -85,6 +92,7 @@ export const makeServer = (
           PatchEngine.fromBsdiff(bsdiff),
           Layer.succeed(PatchPolicy, { ...PatchPolicy.defaults, ...options.policy }),
           Layer.succeed(Retention, retention),
+          options.debounce ?? CheckDebounce.always,
           Delivery.disabled,
         ),
       ),
