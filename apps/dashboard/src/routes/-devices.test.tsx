@@ -1,6 +1,13 @@
 // @vitest-environment jsdom
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import type * as TanStackRouter from "@tanstack/react-router"
 import type { ReactNode } from "react"
@@ -103,10 +110,11 @@ describe("the device pages", () => {
     fireEvent.change(screen.getByLabelText("Client id"), {
       target: { value: ` ${device.clientId} ` },
     })
-    fireEvent.click(screen.getByRole("button", { name: "Search" }))
-    expect(navigate).toHaveBeenCalledWith({
-      to: "/devices/$clientId",
-      params: { clientId: device.clientId },
+    await waitFor(() => {
+      expect(navigate).toHaveBeenCalledWith({
+        to: "/devices/$clientId",
+        params: { clientId: device.clientId },
+      })
     })
     expect(search).toHaveBeenCalledWith({}, undefined)
     client.clear()
@@ -146,16 +154,17 @@ describe("the device pages", () => {
     const Page = DevicesRoute.options.component!
     const client = await mount(Page)
 
-    fireEvent.change(screen.getByLabelText("Country"), {
+    fireEvent.click(screen.getByRole("button", { name: /Filters/ }))
+    fireEvent.click(screen.getByRole("button", { name: /^Country/ }))
+    fireEvent.change(await screen.findByLabelText("Country"), {
       target: { value: "CA" },
     })
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Search" }))
+    await waitFor(() => {
+      expect(search).toHaveBeenLastCalledWith(
+        { runtimeVersion: "", currentUpdateId: "", country: "CA" },
+        undefined
+      )
     })
-    expect(search).toHaveBeenLastCalledWith(
-      { runtimeVersion: "", currentUpdateId: "", country: "CA" },
-      undefined
-    )
     expect(navigate).not.toHaveBeenCalled()
     client.clear()
   })
