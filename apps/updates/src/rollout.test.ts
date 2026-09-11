@@ -70,20 +70,20 @@ describe("rollout cohorts", () => {
 
   it.each([undefined, ""])("excludes device id %j until rollout is complete", async (clientId) => {
     const request = { ...headers, "eas-client-id": clientId };
-    expect(await Effect.runPromise(decide([latest, previous], request))).toEqual({ kind: "manifest", update: previous });
-    expect(await Effect.runPromise(decide([latest], request))).toEqual({ kind: "none" });
+    expect(await Effect.runPromise(decide([latest, previous], request))).toEqual({ kind: "manifest", reason: "manifest", update: previous });
+    expect(await Effect.runPromise(decide([latest], request))).toEqual({ kind: "none", reason: "rollout-excluded" });
     const full = { ...latest, rolloutPercent: 100 };
-    expect(await Effect.runPromise(decide([full, previous], request))).toEqual({ kind: "manifest", update: full });
+    expect(await Effect.runPromise(decide([full, previous], request))).toEqual({ kind: "manifest", reason: "manifest", update: full });
   });
 
   it("serves a rollback control to held-back devices, then the hotfix at 100%", async () => {
     const control: RollbackUpdate = { ...previous, kind: "rollback" };
     const request = { ...headers, "expo-embedded-update-id": "embedded-update" };
-    expect(await Effect.runPromise(decide([latest, control], request))).toEqual({ kind: "rollback", update: control });
+    expect(await Effect.runPromise(decide([latest, control], request))).toEqual({ kind: "rollback", reason: "rollback", update: control });
     expect(await Effect.runPromise(decide([latest, control], {
       ...request, "expo-current-update-id": "EMBEDDED-UPDATE",
-    }))).toEqual({ kind: "none" });
+    }))).toEqual({ kind: "none", reason: "already-embedded" });
     const full = { ...latest, rolloutPercent: 100 };
-    expect(await Effect.runPromise(decide([full, control], request))).toEqual({ kind: "manifest", update: full });
+    expect(await Effect.runPromise(decide([full, control], request))).toEqual({ kind: "manifest", reason: "manifest", update: full });
   });
 });
