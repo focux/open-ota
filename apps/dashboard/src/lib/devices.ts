@@ -64,3 +64,7 @@ export function explainDevice(
 export function timesChecked(checks: number): string {
   return checks === 1 ? "once" : `${checks.toLocaleString()} times`
 }
+
+/** What the count means, since repeats inside the write window are skipped. */
+export const recordedNote =
+  "Recorded on the first check of each minute, so a device polling faster counts once per minute."

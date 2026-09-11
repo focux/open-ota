@@ -2,7 +2,12 @@ import { Link, createFileRoute } from "@tanstack/react-router"
 import { useQuery } from "@tanstack/react-query"
 
 import type { Device, DeviceCheck } from "@/lib/api"
-import { explainCheck, explainDevice, timesChecked } from "@/lib/devices"
+import {
+  explainCheck,
+  explainDevice,
+  recordedNote,
+  timesChecked,
+} from "@/lib/devices"
 import { absoluteTime, flagEmoji, relativeTime } from "@/lib/format"
 import { deviceQueryOptions, useHydrated } from "@/lib/queries"
 import { ErrorState } from "@/components/feedback"
@@ -141,7 +146,7 @@ function DevicePage() {
       <Frame>
         <FrameHeader
           title="Recent checks"
-          description="Newest first. A run of identical answers is one row, counted."
+          description={`Newest first. A run of identical answers is one row. ${recordedNote}`}
         />
         <FramePanel>
           {checks.length === 0 ? (
@@ -187,7 +192,7 @@ function CheckRow({ check }: { readonly check: DeviceCheck }) {
           {relativeTime(check.lastCheckedAt)}
         </span>
         <span>
-          Checked {timesChecked(check.checks)}
+          Recorded {timesChecked(check.checks)}
           {check.checks > 1 && `, since ${relativeTime(check.firstCheckedAt)}`}
         </span>
         <span>
