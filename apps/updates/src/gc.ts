@@ -10,7 +10,8 @@ export interface RetentionPolicy {
   // Groups younger than this keep their assets whatever their position.
   readonly keepDays: number;
   // Updates a device reported running or receiving within this window keep
-  // their assets, so a slow fleet is never cut off from what it runs.
+  // their assets, so a slow fleet is never cut off from what it runs. A device
+  // is forgotten entirely well after this; see forgetDevicesAfterDays.
   readonly deviceDays: number;
   // Assets uploaded or checked for presence this recently may belong to a
   // publish whose group has not landed yet.
@@ -24,8 +25,17 @@ export class Retention extends Context.Service<Retention, RetentionPolicy>()("ex
 export interface SweepResult {
   readonly assets: number;
   readonly patches: number;
+  readonly devices: number;
   readonly rounds: number;
 }
+
+// How long a silent install stays in the registry. Not only a storage bound:
+// the devices table is the population adoption divides by, so this has to keep
+// a dead install out of it without mistaking a seasonal app's quiet months for
+// a lost fleet. A year clears any offseason and bounds the table by the live
+// fleet rather than by every install ever seen. Forgetting is not destructive:
+// the next check-in registers the device again.
+const forgetDevicesAfterDays = 365;
 
 // Objects go first, rows second: a row without an object is found again by
 // the next sweep, an object without a row is unreachable and harmless.
@@ -44,7 +54,23 @@ export const sweep = Effect.fn("Gc.sweep")(function* (options: { readonly batch?
   };
   let deletedAssets = 0;
   let deletedPatches = 0;
+  let deletedDevices = 0;
   let rounds = 0;
+  // Its own round budget, so a backlog of forgotten devices cannot starve the
+  // asset sweep below. Devices go first: the rows dropped here are the ones
+  // the asset rules already ignore, so a partial run only leaves more to do.
+  let deviceRounds = 0;
+  const forgetSince = DateTime.formatIso(
+    DateTime.subtract(now, { days: Math.max(forgetDevicesAfterDays, retention.deviceDays) }),
+  );
+  while (deviceRounds < maxRounds) {
+    const clientIds = yield* store.unseenDevices(forgetSince, batch);
+    if (clientIds.length === 0) break;
+    deviceRounds++;
+    yield* store.deleteDevices(clientIds);
+    deletedDevices += clientIds.length;
+    if (clientIds.length < batch) break;
+  }
   while (rounds < maxRounds) {
     const hashes = yield* store.unreferencedAssets(window, batch);
     if (hashes.length === 0) break;
@@ -59,6 +85,7 @@ export const sweep = Effect.fn("Gc.sweep")(function* (options: { readonly batch?
     deletedPatches += pairs.length;
     if (hashes.length < batch) break;
   }
-  yield* Effect.logInfo("Sweep finished", { assets: deletedAssets, patches: deletedPatches, rounds });
-  return { assets: deletedAssets, patches: deletedPatches, rounds } satisfies SweepResult;
+  const total = rounds + deviceRounds;
+  yield* Effect.logInfo("Sweep finished", { assets: deletedAssets, patches: deletedPatches, devices: deletedDevices, rounds: total });
+  return { assets: deletedAssets, patches: deletedPatches, devices: deletedDevices, rounds: total } satisfies SweepResult;
 });

@@ -8,6 +8,7 @@ import { AssetStore } from "./assets.ts";
 import { Assets } from "./bucket.ts";
 import { Origins } from "./config.ts";
 import { Database } from "./database.ts";
+import { CheckDebounce } from "./debounce.ts";
 import { Delivery } from "./delivery.ts";
 import { Retention, sweep } from "./gc.ts";
 import { Metrics, MetricsDataset } from "./metrics.ts";
@@ -119,11 +120,15 @@ export default class Updates extends Cloudflare.Worker<Updates>()(
       bsdiff === undefined ? PatchEngine.unavailable : PatchEngine.fromBsdiff(bsdiff),
       Layer.succeed(PatchPolicy, policy),
       Layer.succeed(Retention, retention),
+      // No binding, no setup: an isolate-local memo in front of the colo's
+      // own cache. Where neither answers, every check is written instead.
+      typeof caches === "undefined" ? CheckDebounce.always : CheckDebounce.edge(caches.default),
       delivery,
     );
     const app = Layer.mergeAll(routes, adminRoutes).pipe(Layer.provide(noStoreByDefault), Layer.provide(services));
 
-    // Nightly, off-peak: drop bundles, assets and patches nothing retained references.
+    // Nightly, off-peak: forget devices long gone, then drop bundles, assets
+    // and patches nothing retained references.
     yield* Cloudflare.Workers.cron("17 3 * * *", () =>
       sweep().pipe(
         Effect.provide(services),

@@ -1,7 +1,12 @@
 import { readFileSync } from "node:fs";
-import { Effect } from "effect";
+import { RuntimeContext } from "alchemy";
+import { Effect, Layer } from "effect";
+import { TestClock } from "effect/testing";
 import { afterAll, describe, expect, it } from "vitest";
+import { AssetStore } from "./assets.ts";
 import { sha256Base64Url } from "./crypto.ts";
+import { Retention, sweep } from "./gc.ts";
+import { UpdateStore } from "./store.ts";
 import { makeServer, stores } from "./test-support.ts";
 
 const fixture = (name: string) =>
@@ -49,7 +54,7 @@ describe.each(stores)("retention sweep over the %s store", (_, store) => {
     await settle();
     const response = await authed("/admin/gc", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
     expect(response.status).toBe(200);
-    return (await response.json()) as { assets: number; patches: number; rounds: number };
+    return (await response.json()) as { assets: number; patches: number; devices: number; rounds: number };
   };
 
   it("drops what no retained update references, with its patches, and keeps the rest", async () => {
@@ -70,7 +75,7 @@ describe.each(stores)("retention sweep over the %s store", (_, store) => {
       launchAsset: { hash: embeddedHash, key: "embedded", contentType: "application/javascript" },
     })).status).toBe(201);
 
-    expect(await sweep()).toEqual({ assets: 2, patches: 1, rounds: 1 });
+    expect(await sweep()).toEqual({ assets: 2, patches: 1, devices: 0, rounds: 1 });
 
     expect((await request(`/assets/${oldHash}`)).status).toBe(404);
     expect((await request(`/assets/${orphanHash}`)).status).toBe(404);
@@ -85,7 +90,7 @@ describe.each(stores)("retention sweep over the %s store", (_, store) => {
     expect(plan.targets[0]!.previous).toBeNull();
     expect((await authed(`/admin/groups/${first.groupId}`)).status).toBe(200);
 
-    expect(await sweep()).toEqual({ assets: 0, patches: 0, rounds: 0 });
+    expect(await sweep()).toEqual({ assets: 0, patches: 0, devices: 0, rounds: 0 });
   });
 
   it("keeps a bundle that devices still run or that is mid-rollout", async () => {
@@ -98,14 +103,14 @@ describe.each(stores)("retention sweep over the %s store", (_, store) => {
 
     retention.deviceDays = 30;
     try {
-      expect(await sweep()).toEqual({ assets: 0, patches: 0, rounds: 0 });
+      expect(await sweep()).toEqual({ assets: 0, patches: 0, devices: 0, rounds: 0 });
     } finally {
       retention.deviceDays = 0;
     }
     for (const hash of [runningHash, canaryHash]) expect((await request(`/assets/${hash}`)).status).toBe(200);
 
     // Once the device is no longer counted, only the canary and the newest group protect bundles.
-    expect(await sweep()).toEqual({ assets: 1, patches: 0, rounds: 1 });
+    expect(await sweep()).toEqual({ assets: 1, patches: 0, devices: 0, rounds: 1 });
     expect((await request(`/assets/${runningHash}`)).status).toBe(404);
     expect((await request(`/assets/${canaryHash}`)).status).toBe(200);
   });
@@ -115,7 +120,7 @@ describe.each(stores)("retention sweep over the %s store", (_, store) => {
     const pendingHash = await upload(pending);
     retention.uploadGraceHours = 24;
     try {
-      expect(await sweep()).toEqual({ assets: 0, patches: 0, rounds: 0 });
+      expect(await sweep()).toEqual({ assets: 0, patches: 0, devices: 0, rounds: 0 });
     } finally {
       retention.uploadGraceHours = 0;
     }
@@ -125,7 +130,50 @@ describe.each(stores)("retention sweep over the %s store", (_, store) => {
     retention.uploadGraceHours = 24;
     expect((await post("/publish/assets/missing", { hashes: [pendingHash] })).status).toBe(200);
     retention.uploadGraceHours = 0;
-    expect(await sweep()).toEqual({ assets: 1, patches: 0, rounds: 1 });
+    expect(await sweep()).toEqual({ assets: 1, patches: 0, devices: 0, rounds: 1 });
     expect((await request(`/assets/${pendingHash}`)).status).toBe(404);
   });
+});
+
+describe("forgetting devices that stopped checking in", () => {
+  const check = (clientId: string) => ({
+    clientId,
+    platform: "ios" as const,
+    runtimeVersion: "rt-1",
+    channel: "staging",
+    currentUpdateId: undefined,
+    embeddedUpdateId: undefined,
+    servedUpdateId: undefined,
+    country: undefined,
+    city: undefined,
+    decision: "none" as const,
+    reason: "no-update-for-runtime" as const,
+    fatalError: undefined,
+  });
+
+  it("sweeps in batches, keeps the quiet ones, and stops when nothing is left", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const store = yield* UpdateStore;
+        for (const clientId of ["gone-1", "gone-2", "gone-3"]) yield* store.recordCheck(check(clientId));
+        // Past the year a silent install is kept for, but a device checking in
+        // after a long offseason is still here.
+        yield* TestClock.adjust("400 days");
+        yield* store.recordCheck(check("seasonal"));
+
+        const swept = yield* sweep({ batch: 2 });
+        expect(swept.devices).toBe(3);
+        // One full batch, then the remainder: the loop stops on its own.
+        expect(swept.rounds).toBe(2);
+        expect(yield* store.deviceById("gone-1")).toBeNull();
+        expect(yield* store.deviceById("seasonal")).not.toBeNull();
+        expect((yield* sweep()).devices).toBe(0);
+      }).pipe(
+        Effect.provide(UpdateStore.memory()),
+        Effect.provide(AssetStore.memory()),
+        Effect.provide(Layer.succeed(Retention, Retention.defaults)),
+        Effect.provide(RuntimeContext.phantom),
+        Effect.provide(TestClock.layer()),
+      ),
+    ));
 });
