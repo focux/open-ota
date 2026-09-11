@@ -14,6 +14,8 @@ import { Route as DashboardRouteImport } from './routes/_dashboard'
 import { Route as DashboardIndexRouteImport } from './routes/_dashboard.index'
 import { Route as DashboardBranchesIndexRouteImport } from './routes/_dashboard.branches.index'
 import { Route as DashboardBranchesNameRouteImport } from './routes/_dashboard.branches.$name'
+import { Route as DashboardDevicesIndexRouteImport } from './routes/_dashboard.devices.index'
+import { Route as DashboardDevicesClientIdRouteImport } from './routes/_dashboard.devices.$clientId'
 import { Route as DashboardGroupsIdRouteImport } from './routes/_dashboard.groups.$id'
 
 const SplatRoute = SplatRouteImport.update({
@@ -40,6 +42,17 @@ const DashboardBranchesNameRoute = DashboardBranchesNameRouteImport.update({
   path: '/branches/$name',
   getParentRoute: () => DashboardRoute,
 } as any)
+const DashboardDevicesIndexRoute = DashboardDevicesIndexRouteImport.update({
+  id: '/devices/',
+  path: '/devices/',
+  getParentRoute: () => DashboardRoute,
+} as any)
+const DashboardDevicesClientIdRoute =
+  DashboardDevicesClientIdRouteImport.update({
+    id: '/devices/$clientId',
+    path: '/devices/$clientId',
+    getParentRoute: () => DashboardRoute,
+  } as any)
 const DashboardGroupsIdRoute = DashboardGroupsIdRouteImport.update({
   id: '/groups/$id',
   path: '/groups/$id',
@@ -50,15 +63,19 @@ export interface FileRoutesByFullPath {
   '/$': typeof SplatRoute
   '/': typeof DashboardIndexRoute
   '/branches/$name': typeof DashboardBranchesNameRoute
+  '/devices/$clientId': typeof DashboardDevicesClientIdRoute
   '/groups/$id': typeof DashboardGroupsIdRoute
   '/branches/': typeof DashboardBranchesIndexRoute
+  '/devices/': typeof DashboardDevicesIndexRoute
 }
 export interface FileRoutesByTo {
   '/$': typeof SplatRoute
   '/': typeof DashboardIndexRoute
   '/branches/$name': typeof DashboardBranchesNameRoute
+  '/devices/$clientId': typeof DashboardDevicesClientIdRoute
   '/groups/$id': typeof DashboardGroupsIdRoute
   '/branches': typeof DashboardBranchesIndexRoute
+  '/devices': typeof DashboardDevicesIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -66,22 +83,40 @@ export interface FileRoutesById {
   '/_dashboard': typeof DashboardRouteWithChildren
   '/_dashboard/': typeof DashboardIndexRoute
   '/_dashboard/branches/$name': typeof DashboardBranchesNameRoute
+  '/_dashboard/devices/$clientId': typeof DashboardDevicesClientIdRoute
   '/_dashboard/groups/$id': typeof DashboardGroupsIdRoute
   '/_dashboard/branches/': typeof DashboardBranchesIndexRoute
+  '/_dashboard/devices/': typeof DashboardDevicesIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/$' | '/' | '/branches/$name' | '/groups/$id' | '/branches/'
+  fullPaths:
+    | '/$'
+    | '/'
+    | '/branches/$name'
+    | '/devices/$clientId'
+    | '/groups/$id'
+    | '/branches/'
+    | '/devices/'
   fileRoutesByTo: FileRoutesByTo
-  to: '/$' | '/' | '/branches/$name' | '/groups/$id' | '/branches'
+  to:
+    | '/$'
+    | '/'
+    | '/branches/$name'
+    | '/devices/$clientId'
+    | '/groups/$id'
+    | '/branches'
+    | '/devices'
   id:
     | '__root__'
     | '/$'
     | '/_dashboard'
     | '/_dashboard/'
     | '/_dashboard/branches/$name'
+    | '/_dashboard/devices/$clientId'
     | '/_dashboard/groups/$id'
     | '/_dashboard/branches/'
+    | '/_dashboard/devices/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -126,6 +161,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof DashboardBranchesNameRouteImport
       parentRoute: typeof DashboardRoute
     }
+    '/_dashboard/devices/': {
+      id: '/_dashboard/devices/'
+      path: '/devices'
+      fullPath: '/devices/'
+      preLoaderRoute: typeof DashboardDevicesIndexRouteImport
+      parentRoute: typeof DashboardRoute
+    }
+    '/_dashboard/devices/$clientId': {
+      id: '/_dashboard/devices/$clientId'
+      path: '/devices/$clientId'
+      fullPath: '/devices/$clientId'
+      preLoaderRoute: typeof DashboardDevicesClientIdRouteImport
+      parentRoute: typeof DashboardRoute
+    }
     '/_dashboard/groups/$id': {
       id: '/_dashboard/groups/$id'
       path: '/groups/$id'
@@ -139,15 +188,19 @@ declare module '@tanstack/react-router' {
 interface DashboardRouteChildren {
   DashboardIndexRoute: typeof DashboardIndexRoute
   DashboardBranchesNameRoute: typeof DashboardBranchesNameRoute
+  DashboardDevicesClientIdRoute: typeof DashboardDevicesClientIdRoute
   DashboardGroupsIdRoute: typeof DashboardGroupsIdRoute
   DashboardBranchesIndexRoute: typeof DashboardBranchesIndexRoute
+  DashboardDevicesIndexRoute: typeof DashboardDevicesIndexRoute
 }
 
 const DashboardRouteChildren: DashboardRouteChildren = {
   DashboardIndexRoute: DashboardIndexRoute,
   DashboardBranchesNameRoute: DashboardBranchesNameRoute,
+  DashboardDevicesClientIdRoute: DashboardDevicesClientIdRoute,
   DashboardGroupsIdRoute: DashboardGroupsIdRoute,
   DashboardBranchesIndexRoute: DashboardBranchesIndexRoute,
+  DashboardDevicesIndexRoute: DashboardDevicesIndexRoute,
 }
 
 const DashboardRouteWithChildren = DashboardRoute._addFileChildren(
