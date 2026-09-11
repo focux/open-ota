@@ -2,7 +2,7 @@ import { Effect } from "effect";
 import { TestClock } from "effect/testing";
 import { describe, expect, it } from "vitest";
 import type { PublishGroupInput } from "./model.ts";
-import { UpdateStore, type DeviceCheck } from "./store.ts";
+import { UpdateStore, recentChecksKept, type DeviceCheck, type DeviceQuery } from "./store.ts";
 import { stores } from "./test-support.ts";
 
 const bundle = (hash = "A".repeat(43)) => ({
@@ -20,8 +20,22 @@ const check = (overrides: Partial<DeviceCheck> = {}): DeviceCheck => ({
   servedUpdateId: undefined,
   country: undefined,
   city: undefined,
+  decision: "none",
+  reason: "no-update-for-runtime",
+  fatalError: undefined,
   ...overrides,
 });
+
+// Every filter off: a search each test narrows one field at a time.
+const anyDevice: DeviceQuery = {
+  platform: undefined,
+  runtimeVersion: undefined,
+  channel: undefined,
+  currentUpdateId: undefined,
+  country: undefined,
+  seenWithinMinutes: undefined,
+  limit: 50,
+};
 
 describe.each(stores)("store contract over %s", (_, layer) => {
   const run = <A, E>(effect: Effect.Effect<A, E, UpdateStore>) =>
@@ -143,6 +157,67 @@ describe.each(stores)("store contract over %s", (_, layer) => {
         yield* store.recordCheck(check({ country: "CA" }));
         yield* store.recordFailures({ clientId: "device", updateIds: [updateId], fatalError: "Launch failed" });
         expect((yield* store.metricsOverview()).segments).toEqual([{ updateId, country: "CA", running: 0, faulty: 1 }]);
+      }),
+    ));
+
+  it("keeps the last checks a device made, newest first", () =>
+    run(
+      Effect.gen(function* () {
+        const store = yield* UpdateStore;
+        for (let index = 0; index < recentChecksKept + 5; index++) {
+          yield* store.recordCheck(check({ fatalError: `crash-${index}` }));
+        }
+        const history = yield* store.recentChecks("device");
+        expect(history).toHaveLength(recentChecksKept);
+        expect(history.map((entry) => entry.fatalError)).toEqual(
+          Array.from({ length: recentChecksKept }, (_, index) => `crash-${recentChecksKept + 4 - index}`),
+        );
+        expect(yield* store.recentChecks("never-seen")).toEqual([]);
+      }),
+    ));
+
+  it("records the answer each check got beside the device it went to", () =>
+    run(
+      Effect.gen(function* () {
+        const store = yield* seed;
+        const group = yield* store.publishGroup({ branch: "staging", updates: { ios: bundle() } });
+        const updateId = group.updates[0]!.id;
+        yield* store.recordCheck(check({ decision: "manifest", reason: "manifest", servedUpdateId: updateId.toUpperCase(), country: "CA" }));
+        const device = yield* store.deviceById("device");
+        expect(device).toMatchObject({ clientId: "device", platform: "ios", channel: "staging", servedUpdateId: updateId, country: "CA" });
+        expect(device!.firstSeenAt).toBe(device!.lastSeenAt);
+        expect(yield* store.deviceById("never-seen")).toBeNull();
+        expect((yield* store.recentChecks("device"))[0]).toMatchObject({
+          decision: "manifest",
+          reason: "manifest",
+          servedUpdateId: updateId,
+          currentUpdateId: null,
+        });
+      }),
+    ));
+
+  it("searches devices by any combination of what support is told", () =>
+    run(
+      Effect.gen(function* () {
+        const store = yield* UpdateStore;
+        const updateId = "abcdef00-0000-4000-8000-000000000001";
+        yield* store.recordCheck(check({ clientId: "phone", country: "CA", currentUpdateId: updateId.toUpperCase() }));
+        yield* store.recordCheck(check({ clientId: "tablet", platform: "android", channel: "production", runtimeVersion: "rt-2", country: "US" }));
+        const ids = (query: Partial<DeviceQuery>) =>
+          Effect.map(store.findDevices({ ...anyDevice, ...query }), (rows) => rows.map((row) => row.clientId));
+        // Checks a tick apart share a timestamp, so the client id breaks the tie.
+        expect(yield* ids({})).toEqual(["phone", "tablet"]);
+        expect(yield* ids({ platform: "android" })).toEqual(["tablet"]);
+        expect(yield* ids({ country: "CA" })).toEqual(["phone"]);
+        expect(yield* ids({ runtimeVersion: "rt-2", channel: "production" })).toEqual(["tablet"]);
+        expect(yield* ids({ platform: "ios", channel: "production" })).toEqual([]);
+        expect(yield* ids({ currentUpdateId: updateId })).toEqual(["phone"]);
+        expect(yield* ids({ limit: 1 })).toHaveLength(1);
+        expect(yield* ids({ seenWithinMinutes: 10 })).toHaveLength(2);
+        yield* TestClock.adjust("30 minutes");
+        expect(yield* ids({ seenWithinMinutes: 10 })).toEqual([]);
+        yield* store.recordCheck(check({ clientId: "phone" }));
+        expect(yield* ids({ seenWithinMinutes: 10 })).toEqual(["phone"]);
       }),
     ));
 

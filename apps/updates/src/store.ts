@@ -1,6 +1,7 @@
 import { Context, DateTime, Effect, Layer, Schema } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { BadRequest, Conflict, StorageError } from "./errors.ts";
+import { DecisionKind, DecisionReason } from "./protocol.ts";
 import {
   ExpoConfig,
   Percent,
@@ -131,6 +132,53 @@ export interface DeviceCheck {
   // From Cloudflare's request geolocation.
   readonly country: string | undefined;
   readonly city: string | undefined;
+  // What the server answered and why. Kept per check, not only as the device's
+  // last state, because the answer is the thing support has to explain.
+  readonly decision: DecisionKind;
+  readonly reason: DecisionReason;
+  // What the device reported crashing with on this check, if anything.
+  readonly fatalError: string | undefined;
+}
+
+// The last-write-wins row: where a device is now.
+export interface DeviceRecord {
+  readonly clientId: string;
+  readonly platform: Platform;
+  readonly runtimeVersion: string;
+  readonly channel: string;
+  readonly currentUpdateId: string | null;
+  readonly embeddedUpdateId: string | null;
+  readonly servedUpdateId: string | null;
+  readonly country: string | null;
+  readonly city: string | null;
+  readonly firstSeenAt: string;
+  readonly lastSeenAt: string;
+}
+
+// One entry of the ring: a check as it was answered, newest first when read.
+export interface DeviceCheckEntry {
+  readonly checkedAt: string;
+  readonly platform: Platform;
+  readonly runtimeVersion: string;
+  readonly channel: string;
+  readonly currentUpdateId: string | null;
+  readonly embeddedUpdateId: string | null;
+  readonly decision: DecisionKind;
+  readonly reason: DecisionReason;
+  readonly servedUpdateId: string | null;
+  readonly fatalError: string | null;
+}
+
+// Every filter is optional: support searches with whatever the user could say.
+export interface DeviceQuery {
+  readonly platform: Platform | undefined;
+  readonly runtimeVersion: string | undefined;
+  readonly channel: string | undefined;
+  readonly currentUpdateId: string | undefined;
+  readonly country: string | undefined;
+  // Only devices that checked in this recently.
+  readonly seenWithinMinutes: number | undefined;
+  readonly limit: number;
 }
 
 export interface UpdateFailure {
@@ -191,8 +239,14 @@ export interface UpdateFigures {
 }
 
 export interface UpdateStoreShape {
+  // Writes the device's current state and appends to its ring of recent checks.
   readonly recordCheck: (check: DeviceCheck) => Effect.Effect<void, StorageError>;
   readonly recordFailures: (failure: UpdateFailure) => Effect.Effect<void, StorageError>;
+  readonly deviceById: (clientId: string) => Effect.Effect<DeviceRecord | null, StorageError>;
+  // Newest first, at most `recentChecksKept` of them.
+  readonly recentChecks: (clientId: string) => Effect.Effect<ReadonlyArray<DeviceCheckEntry>, StorageError>;
+  // Devices matching every filter given, most recently seen first.
+  readonly findDevices: (query: DeviceQuery) => Effect.Effect<ReadonlyArray<DeviceRecord>, StorageError>;
   readonly metricsOverview: () => Effect.Effect<MetricsOverview, StorageError>;
   readonly updateFigures: (updates: ReadonlyArray<Update>) => Effect.Effect<ReadonlyArray<UpdateFigures>, StorageError>;
   readonly branchForChannel: (channel: string) => Effect.Effect<string | null, StorageError>;
@@ -300,6 +354,10 @@ const toUpdate = (row: typeof UpdateRow.Type): Update => {
 };
 
 const storageFail = (message: string) => (cause: unknown) => new StorageError({ message, cause });
+
+// How many checks each device keeps. Enough to see a pattern across a few
+// launches, small enough that the table stays proportional to the fleet.
+export const recentChecksKept = 20;
 
 // D1 rejects a statement with more than 100 bound parameters, so an `IN (...)`
 // over a caller-sized list is asked one batch at a time. The margin under 100
@@ -790,6 +848,23 @@ function makeSqlStore() {
     const recordCheck = Effect.fn("UpdateStore.recordCheck")(function* (check: DeviceCheck) {
       const now = DateTime.formatIso(yield* DateTime.now);
       yield* sql`
+        INSERT INTO device_checks (client_id, checked_at, platform, runtime_version, channel, current_update_id,
+                                   embedded_update_id, decision, reason, served_update_id, fatal_error)
+        VALUES (${check.clientId}, ${now}, ${check.platform}, ${check.runtimeVersion}, ${check.channel},
+                ${check.currentUpdateId?.toLowerCase() ?? null}, ${check.embeddedUpdateId?.toLowerCase() ?? null},
+                ${check.decision}, ${check.reason}, ${check.servedUpdateId?.toLowerCase() ?? null},
+                ${check.fatalError ?? null})
+      `.pipe(Effect.mapError(storageFail("Could not record the device check.")));
+      // Pruned here rather than by the sweep: the ring is only ever as long as
+      // its own writes make it, and checks within one second keep their order
+      // by rowid.
+      yield* sql`
+        DELETE FROM device_checks WHERE client_id = ${check.clientId} AND rowid NOT IN (
+          SELECT rowid FROM device_checks WHERE client_id = ${check.clientId}
+          ORDER BY checked_at DESC, rowid DESC LIMIT ${recentChecksKept}
+        )
+      `.pipe(Effect.mapError(storageFail("Could not prune the device checks.")));
+      yield* sql`
         INSERT INTO devices (client_id, platform, runtime_version, channel, current_update_id, embedded_update_id,
                              served_update_id, country, city, first_seen_at, last_seen_at)
         VALUES (${check.clientId}, ${check.platform}, ${check.runtimeVersion}, ${check.channel},
@@ -823,6 +898,58 @@ function makeSqlStore() {
             last_seen_at = excluded.last_seen_at
         `.pipe(Effect.mapError(storageFail("Could not record the update failure.")));
       }
+    });
+
+    const deviceById = Effect.fn("UpdateStore.deviceById")(function* (clientId: string) {
+      const rows = yield* sql`
+        SELECT ${sql.literal(deviceColumns)} FROM devices WHERE client_id = ${clientId}
+      `.pipe(Effect.mapError(storageFail("Could not read the device.")), storedRows(DeviceRow));
+      const row = rows[0];
+      return row === undefined ? null : toDeviceRecord(row);
+    });
+
+    const recentChecks = Effect.fn("UpdateStore.recentChecks")(function* (clientId: string) {
+      const rows = yield* sql`
+        SELECT checked_at, platform, runtime_version, channel, current_update_id, embedded_update_id,
+               decision, reason, served_update_id, fatal_error
+        FROM device_checks WHERE client_id = ${clientId}
+        ORDER BY checked_at DESC, rowid DESC LIMIT ${recentChecksKept}
+      `.pipe(Effect.mapError(storageFail("Could not read the device checks.")), storedRows(DeviceCheckRow));
+      return rows.map((row) => ({
+        checkedAt: row.checked_at,
+        platform: row.platform,
+        runtimeVersion: row.runtime_version,
+        channel: row.channel,
+        currentUpdateId: row.current_update_id,
+        embeddedUpdateId: row.embedded_update_id,
+        decision: row.decision,
+        reason: row.reason,
+        servedUpdateId: row.served_update_id,
+        fatalError: row.fatal_error,
+      }));
+    });
+
+    const findDevices = Effect.fn("UpdateStore.findDevices")(function* (query: DeviceQuery) {
+      const platform = query.platform ?? null;
+      const runtimeVersion = query.runtimeVersion ?? null;
+      const channel = query.channel ?? null;
+      const currentUpdateId = query.currentUpdateId?.toLowerCase() ?? null;
+      const country = query.country ?? null;
+      const since =
+        query.seenWithinMinutes === undefined
+          ? null
+          : DateTime.formatIso(DateTime.subtract(yield* DateTime.now, { minutes: query.seenWithinMinutes }));
+      const rows = yield* sql`
+        SELECT ${sql.literal(deviceColumns)} FROM devices
+        WHERE (${platform} IS NULL OR platform = ${platform})
+          AND (${runtimeVersion} IS NULL OR runtime_version = ${runtimeVersion})
+          AND (${channel} IS NULL OR channel = ${channel})
+          AND (${currentUpdateId} IS NULL OR current_update_id = ${currentUpdateId})
+          AND (${country} IS NULL OR country = ${country})
+          AND (${since} IS NULL OR last_seen_at >= ${since})
+        ORDER BY last_seen_at DESC, client_id LIMIT ${query.limit}
+      `.pipe(Effect.mapError(storageFail("Could not search devices.")), storedRows(DeviceRow));
+      return rows.map(toDeviceRecord);
     });
 
     const updateFigures = Effect.fn("UpdateStore.updateFigures")(function* (list: ReadonlyArray<Update>) {
@@ -1098,6 +1225,9 @@ function makeSqlStore() {
     return {
       recordCheck,
       recordFailures,
+      deviceById,
+      recentChecks,
+      findDevices,
       metricsOverview,
       updateFigures,
       branchForChannel,
@@ -1137,6 +1267,50 @@ const AssetRow = Schema.Struct({
   content_type: Schema.String,
   size: Schema.Int,
   compressed_size: Schema.NullOr(Schema.Int),
+});
+
+const deviceColumns = `client_id, platform, runtime_version, channel, current_update_id, embedded_update_id,
+               served_update_id, country, city, first_seen_at, last_seen_at`;
+
+const DeviceRow = Schema.Struct({
+  client_id: Schema.String,
+  platform: Platform,
+  runtime_version: Schema.String,
+  channel: Schema.String,
+  current_update_id: Schema.NullOr(Schema.String),
+  embedded_update_id: Schema.NullOr(Schema.String),
+  served_update_id: Schema.NullOr(Schema.String),
+  country: Schema.NullOr(Schema.String),
+  city: Schema.NullOr(Schema.String),
+  first_seen_at: Schema.String,
+  last_seen_at: Schema.String,
+});
+
+const toDeviceRecord = (row: typeof DeviceRow.Type): DeviceRecord => ({
+  clientId: row.client_id,
+  platform: row.platform,
+  runtimeVersion: row.runtime_version,
+  channel: row.channel,
+  currentUpdateId: row.current_update_id,
+  embeddedUpdateId: row.embedded_update_id,
+  servedUpdateId: row.served_update_id,
+  country: row.country,
+  city: row.city,
+  firstSeenAt: row.first_seen_at,
+  lastSeenAt: row.last_seen_at,
+});
+
+const DeviceCheckRow = Schema.Struct({
+  checked_at: Schema.String,
+  platform: Platform,
+  runtime_version: Schema.String,
+  channel: Schema.String,
+  current_update_id: Schema.NullOr(Schema.String),
+  embedded_update_id: Schema.NullOr(Schema.String),
+  decision: DecisionKind,
+  reason: DecisionReason,
+  served_update_id: Schema.NullOr(Schema.String),
+  fatal_error: Schema.NullOr(Schema.String),
 });
 
 // Keeps the first reason seen for each bundle, drops the target, caps the list.
@@ -1228,6 +1402,25 @@ const mergeCounts = (running: Counts, served: Counts, faulty: Counts): MetricsOv
   );
 };
 
+// The memory rows keep absent values as undefined; a device row reads them as
+// null, the way a stored row comes back.
+const memoryDeviceRecord = (
+  clientId: string,
+  row: DeviceCheck & { firstSeenAt: string; lastSeenAt: string },
+): DeviceRecord => ({
+  clientId,
+  platform: row.platform,
+  runtimeVersion: row.runtimeVersion,
+  channel: row.channel,
+  currentUpdateId: row.currentUpdateId ?? null,
+  embeddedUpdateId: row.embeddedUpdateId ?? null,
+  servedUpdateId: row.servedUpdateId ?? null,
+  country: row.country ?? null,
+  city: row.city ?? null,
+  firstSeenAt: row.firstSeenAt,
+  lastSeenAt: row.lastSeenAt,
+});
+
 // The test double: same contract, arrays in a closure.
 function makeMemoryStore(): UpdateStoreShape {
   const seeded = "2026-09-02T00:00:00.000Z";
@@ -1241,7 +1434,8 @@ function makeMemoryStore(): UpdateStoreShape {
   const builds = new Map<string, Build>();
   const pruned = new Set<string>();
   const groups: Array<Group> = [];
-  const devices = new Map<string, DeviceCheck & { lastSeenAt: string }>();
+  const devices = new Map<string, DeviceCheck & { firstSeenAt: string; lastSeenAt: string }>();
+  const deviceChecks = new Map<string, Array<DeviceCheckEntry>>();
   const failures = new Map<string, { clientId: string; updateId: string; fatalError: string | undefined }>();
   const updates = () => groups.flatMap((group) => group.updates);
   const newestFirst = (list: ReadonlyArray<Update>) => [...list].reverse();
@@ -1249,6 +1443,7 @@ function makeMemoryStore(): UpdateStoreShape {
     recordCheck: (check) =>
       Effect.gen(function* () {
         const previous = devices.get(check.clientId);
+        const now = DateTime.formatIso(yield* DateTime.now);
         devices.set(check.clientId, {
           ...check,
           currentUpdateId: check.currentUpdateId?.toLowerCase(),
@@ -1259,8 +1454,28 @@ function makeMemoryStore(): UpdateStoreShape {
           ),
           country: check.country ?? previous?.country,
           city: check.city ?? previous?.city,
-          lastSeenAt: DateTime.formatIso(yield* DateTime.now),
+          firstSeenAt: previous?.firstSeenAt ?? now,
+          lastSeenAt: now,
         });
+        const ring = deviceChecks.get(check.clientId) ?? [];
+        deviceChecks.set(
+          check.clientId,
+          [
+            {
+              checkedAt: now,
+              platform: check.platform,
+              runtimeVersion: check.runtimeVersion,
+              channel: check.channel,
+              currentUpdateId: check.currentUpdateId?.toLowerCase() ?? null,
+              embeddedUpdateId: check.embeddedUpdateId?.toLowerCase() ?? null,
+              decision: check.decision,
+              reason: check.reason,
+              servedUpdateId: check.servedUpdateId?.toLowerCase() ?? null,
+              fatalError: check.fatalError ?? null,
+            },
+            ...ring,
+          ].slice(0, recentChecksKept),
+        );
       }),
     recordFailures: (failure) =>
       Effect.sync(() => {
@@ -1269,6 +1484,32 @@ function makeMemoryStore(): UpdateStoreShape {
           const fatalError = failure.fatalError ?? failures.get(key)?.fatalError;
           failures.set(key, { clientId: failure.clientId, updateId, fatalError });
         }
+      }),
+    deviceById: (clientId) => Effect.sync(() => {
+      const row = devices.get(clientId);
+      return row === undefined ? null : memoryDeviceRecord(clientId, row);
+    }),
+    recentChecks: (clientId) => Effect.sync(() => deviceChecks.get(clientId) ?? []),
+    findDevices: (query) =>
+      Effect.gen(function* () {
+        const since =
+          query.seenWithinMinutes === undefined
+            ? undefined
+            : DateTime.formatIso(DateTime.subtract(yield* DateTime.now, { minutes: query.seenWithinMinutes }));
+        const currentUpdateId = query.currentUpdateId?.toLowerCase();
+        return [...devices]
+          .map(([clientId, row]) => memoryDeviceRecord(clientId, row))
+          .filter(
+            (row) =>
+              (query.platform === undefined || row.platform === query.platform) &&
+              (query.runtimeVersion === undefined || row.runtimeVersion === query.runtimeVersion) &&
+              (query.channel === undefined || row.channel === query.channel) &&
+              (currentUpdateId === undefined || row.currentUpdateId === currentUpdateId) &&
+              (query.country === undefined || row.country === query.country) &&
+              (since === undefined || row.lastSeenAt >= since),
+          )
+          .sort((a, b) => b.lastSeenAt.localeCompare(a.lastSeenAt) || a.clientId.localeCompare(b.clientId))
+          .slice(0, query.limit);
       }),
     metricsOverview: () =>
       Effect.gen(function* () {
