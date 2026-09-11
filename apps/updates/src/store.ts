@@ -155,9 +155,12 @@ export interface DeviceRecord {
   readonly lastSeenAt: string;
 }
 
-// One entry of the ring: a check as it was answered, newest first when read.
+// One entry of the ring: an answer the device got, newest first when read. A
+// run of identical answers is one entry, counted rather than repeated.
 export interface DeviceCheckEntry {
-  readonly checkedAt: string;
+  readonly firstCheckedAt: string;
+  readonly lastCheckedAt: string;
+  readonly checks: number;
   readonly platform: Platform;
   readonly runtimeVersion: string;
   readonly channel: string;
@@ -847,23 +850,44 @@ function makeSqlStore() {
 
     const recordCheck = Effect.fn("UpdateStore.recordCheck")(function* (check: DeviceCheck) {
       const now = DateTime.formatIso(yield* DateTime.now);
-      yield* sql`
-        INSERT INTO device_checks (client_id, checked_at, platform, runtime_version, channel, current_update_id,
-                                   embedded_update_id, decision, reason, served_update_id, fatal_error)
-        VALUES (${check.clientId}, ${now}, ${check.platform}, ${check.runtimeVersion}, ${check.channel},
-                ${check.currentUpdateId?.toLowerCase() ?? null}, ${check.embeddedUpdateId?.toLowerCase() ?? null},
-                ${check.decision}, ${check.reason}, ${check.servedUpdateId?.toLowerCase() ?? null},
-                ${check.fatalError ?? null})
-      `.pipe(Effect.mapError(storageFail("Could not record the device check.")));
-      // Pruned here rather than by the sweep: the ring is only ever as long as
-      // its own writes make it, and checks within one second keep their order
-      // by rowid.
-      yield* sql`
-        DELETE FROM device_checks WHERE client_id = ${check.clientId} AND rowid NOT IN (
-          SELECT rowid FROM device_checks WHERE client_id = ${check.clientId}
-          ORDER BY checked_at DESC, rowid DESC LIMIT ${recentChecksKept}
-        )
-      `.pipe(Effect.mapError(storageFail("Could not prune the device checks.")));
+      const fail = storageFail("Could not record the device check.");
+      const current = check.currentUpdateId?.toLowerCase() ?? null;
+      const embedded = check.embeddedUpdateId?.toLowerCase() ?? null;
+      const served = check.servedUpdateId?.toLowerCase() ?? null;
+      const fatalError = check.fatalError ?? null;
+      // The common poll: the same answer as last time, so the newest entry
+      // absorbs it. `IS` rather than `=` so the null columns compare.
+      const repeated = yield* sql`
+        UPDATE device_checks SET last_checked_at = ${now}, checks = checks + 1
+        WHERE rowid = (
+            SELECT rowid FROM device_checks WHERE client_id = ${check.clientId}
+            ORDER BY last_checked_at DESC, rowid DESC LIMIT 1
+          )
+          AND platform = ${check.platform} AND runtime_version = ${check.runtimeVersion} AND channel = ${check.channel}
+          AND current_update_id IS ${current} AND embedded_update_id IS ${embedded}
+          AND decision = ${check.decision} AND reason = ${check.reason}
+          AND served_update_id IS ${served} AND fatal_error IS ${fatalError}
+        RETURNING rowid
+      `.pipe(Effect.mapError(fail));
+      if (repeated.length === 0) {
+        yield* sql`
+          INSERT INTO device_checks (client_id, first_checked_at, last_checked_at, checks, platform, runtime_version,
+                                     channel, current_update_id, embedded_update_id, decision, reason,
+                                     served_update_id, fatal_error)
+          VALUES (${check.clientId}, ${now}, ${now}, 1, ${check.platform}, ${check.runtimeVersion},
+                  ${check.channel}, ${current}, ${embedded}, ${check.decision}, ${check.reason}, ${served},
+                  ${fatalError})
+        `.pipe(Effect.mapError(fail));
+        // Pruned here rather than by the sweep: the ring is only ever as long
+        // as its own writes make it, and entries written in the same second
+        // keep their order by rowid.
+        yield* sql`
+          DELETE FROM device_checks WHERE client_id = ${check.clientId} AND rowid NOT IN (
+            SELECT rowid FROM device_checks WHERE client_id = ${check.clientId}
+            ORDER BY last_checked_at DESC, rowid DESC LIMIT ${recentChecksKept}
+          )
+        `.pipe(Effect.mapError(storageFail("Could not prune the device checks.")));
+      }
       yield* sql`
         INSERT INTO devices (client_id, platform, runtime_version, channel, current_update_id, embedded_update_id,
                              served_update_id, country, city, first_seen_at, last_seen_at)
@@ -910,13 +934,15 @@ function makeSqlStore() {
 
     const recentChecks = Effect.fn("UpdateStore.recentChecks")(function* (clientId: string) {
       const rows = yield* sql`
-        SELECT checked_at, platform, runtime_version, channel, current_update_id, embedded_update_id,
-               decision, reason, served_update_id, fatal_error
+        SELECT first_checked_at, last_checked_at, checks, platform, runtime_version, channel, current_update_id,
+               embedded_update_id, decision, reason, served_update_id, fatal_error
         FROM device_checks WHERE client_id = ${clientId}
-        ORDER BY checked_at DESC, rowid DESC LIMIT ${recentChecksKept}
+        ORDER BY last_checked_at DESC, rowid DESC LIMIT ${recentChecksKept}
       `.pipe(Effect.mapError(storageFail("Could not read the device checks.")), storedRows(DeviceCheckRow));
       return rows.map((row) => ({
-        checkedAt: row.checked_at,
+        firstCheckedAt: row.first_checked_at,
+        lastCheckedAt: row.last_checked_at,
+        checks: row.checks,
         platform: row.platform,
         runtimeVersion: row.runtime_version,
         channel: row.channel,
@@ -1301,7 +1327,9 @@ const toDeviceRecord = (row: typeof DeviceRow.Type): DeviceRecord => ({
 });
 
 const DeviceCheckRow = Schema.Struct({
-  checked_at: Schema.String,
+  first_checked_at: Schema.String,
+  last_checked_at: Schema.String,
+  checks: Schema.Int,
   platform: Platform,
   runtime_version: Schema.String,
   channel: Schema.String,
@@ -1402,6 +1430,18 @@ const mergeCounts = (running: Counts, served: Counts, faulty: Counts): MetricsOv
   );
 };
 
+// Two entries the ring should hold as one: everything but when and how often.
+const sameAnswer = (a: DeviceCheckEntry, b: DeviceCheckEntry) =>
+  a.platform === b.platform &&
+  a.runtimeVersion === b.runtimeVersion &&
+  a.channel === b.channel &&
+  a.currentUpdateId === b.currentUpdateId &&
+  a.embeddedUpdateId === b.embeddedUpdateId &&
+  a.decision === b.decision &&
+  a.reason === b.reason &&
+  a.servedUpdateId === b.servedUpdateId &&
+  a.fatalError === b.fatalError;
+
 // The memory rows keep absent values as undefined; a device row reads them as
 // null, the way a stored row comes back.
 const memoryDeviceRecord = (
@@ -1458,23 +1498,26 @@ function makeMemoryStore(): UpdateStoreShape {
           lastSeenAt: now,
         });
         const ring = deviceChecks.get(check.clientId) ?? [];
+        const entry: DeviceCheckEntry = {
+          firstCheckedAt: now,
+          lastCheckedAt: now,
+          checks: 1,
+          platform: check.platform,
+          runtimeVersion: check.runtimeVersion,
+          channel: check.channel,
+          currentUpdateId: check.currentUpdateId?.toLowerCase() ?? null,
+          embeddedUpdateId: check.embeddedUpdateId?.toLowerCase() ?? null,
+          decision: check.decision,
+          reason: check.reason,
+          servedUpdateId: check.servedUpdateId?.toLowerCase() ?? null,
+          fatalError: check.fatalError ?? null,
+        };
+        const newest = ring[0];
         deviceChecks.set(
           check.clientId,
-          [
-            {
-              checkedAt: now,
-              platform: check.platform,
-              runtimeVersion: check.runtimeVersion,
-              channel: check.channel,
-              currentUpdateId: check.currentUpdateId?.toLowerCase() ?? null,
-              embeddedUpdateId: check.embeddedUpdateId?.toLowerCase() ?? null,
-              decision: check.decision,
-              reason: check.reason,
-              servedUpdateId: check.servedUpdateId?.toLowerCase() ?? null,
-              fatalError: check.fatalError ?? null,
-            },
-            ...ring,
-          ].slice(0, recentChecksKept),
+          newest !== undefined && sameAnswer(newest, entry)
+            ? [{ ...newest, lastCheckedAt: now, checks: newest.checks + 1 }, ...ring.slice(1)]
+            : [entry, ...ring].slice(0, recentChecksKept),
         );
       }),
     recordFailures: (failure) =>
