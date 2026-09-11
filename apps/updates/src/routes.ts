@@ -146,10 +146,14 @@ export const routes = HttpRouter.use(
         const servedUpdateId = decision.kind === "none" ? undefined : decision.update.id;
         const clientId = headers["eas-client-id"] || undefined;
         const failedUpdateIds = parseFailedUpdateIds(headers["expo-recent-failed-update-ids"]);
+        // The channel is the one thing the decision cannot see: with no branch
+        // behind it there were never any candidates to choose from.
+        const reason = branch === null ? "unknown-channel" : decision.reason;
+        const fatalError = headers["expo-fatal-error"]?.slice(0, 1024);
         yield* afterResponse(
           clientId === undefined || failedUpdateIds.length === 0
             ? Effect.void
-            : store.recordFailures({ clientId, updateIds: failedUpdateIds, fatalError: headers["expo-fatal-error"]?.slice(0, 1024) }),
+            : store.recordFailures({ clientId, updateIds: failedUpdateIds, fatalError }),
           clientId === undefined
             ? Effect.void
             : store.recordCheck({
@@ -162,6 +166,9 @@ export const routes = HttpRouter.use(
                 servedUpdateId,
                 country,
                 city,
+                decision: decision.kind,
+                reason,
+                fatalError,
               }),
           metrics.record({
             event: "check",
