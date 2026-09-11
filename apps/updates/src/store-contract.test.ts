@@ -1,4 +1,4 @@
-import { Effect } from "effect";
+import { DateTime, Effect } from "effect";
 import { TestClock } from "effect/testing";
 import { describe, expect, it } from "vitest";
 import type { PublishGroupInput } from "./model.ts";
@@ -160,7 +160,7 @@ describe.each(stores)("store contract over %s", (_, layer) => {
       }),
     ));
 
-  it("keeps the last checks a device made, newest first", () =>
+  it("keeps the last answers a device got, newest first", () =>
     run(
       Effect.gen(function* () {
         const store = yield* UpdateStore;
@@ -173,6 +173,26 @@ describe.each(stores)("store contract over %s", (_, layer) => {
           Array.from({ length: recentChecksKept }, (_, index) => `crash-${recentChecksKept + 4 - index}`),
         );
         expect(yield* store.recentChecks("never-seen")).toEqual([]);
+      }),
+    ));
+
+  it("counts a run of identical answers instead of repeating it", () =>
+    run(
+      Effect.gen(function* () {
+        const store = yield* UpdateStore;
+        const first = DateTime.formatIso(yield* DateTime.now);
+        for (let index = 0; index < 50; index++) {
+          yield* store.recordCheck(check());
+          yield* TestClock.adjust("1 minute");
+        }
+        yield* store.recordCheck(check({ decision: "manifest", reason: "manifest", servedUpdateId: "update" }));
+        const history = yield* store.recentChecks("device");
+        expect(history.map((entry) => [entry.reason, entry.checks])).toEqual([
+          ["manifest", 1],
+          ["no-update-for-runtime", 50],
+        ]);
+        expect(history[1]).toMatchObject({ firstCheckedAt: first });
+        expect(history[1]!.lastCheckedAt > first).toBe(true);
       }),
     ));
 
