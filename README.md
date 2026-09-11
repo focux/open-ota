@@ -288,8 +288,8 @@ current scope.
 
 The dashboard reflects device check-ins, rather than continuous activity. Open OTA stores client
 IDs, platform and runtime versions, channels, current/embedded/served update IDs, check-in timestamps,
-country and city when available, and update failure reports. Check and asset events are also written
-to Analytics Engine. These records live in your Cloudflare account. Asset events carry the bytes
+country and city when available, recent check history per device, and update failure reports. Check
+and asset events are also written to Analytics Engine. These records live in your Cloudflare account. Asset events carry the bytes
 served, which is where the per-update delivery counts in the dashboard come from.
 
 Failure information depends on what `expo-updates` reports on subsequent checks. It is not a complete
@@ -358,8 +358,13 @@ that matches is the answer.
 | **Already current** | Nothing is wrong: the device runs the newest update the branch serves. |
 | Served is ahead of running | The update was downloaded and is waiting for a full relaunch. `expo-updates` does not apply one on a return from the background. |
 
-Checks are kept per device as a short bounded history, and a run of identical answers is one entry
-with a count, so the list shows the transitions rather than the last few minutes of polling.
+Each device keeps its last 20 answers. A run of identical ones is a single entry with a count, and a
+repeat within a minute of the last write is not recorded at all, so the list shows the transitions
+that explain the device rather than the last few minutes of polling. Nothing here needs configuring.
+
+A device that has not checked in for a year is forgotten by the nightly sweep, along with its checks
+and failure reports: it reappears on its next check-in, and until then it is out of the device counts
+and the adoption denominators, which is what keeps a long-dead install from diluting them.
 
 ## License
 
