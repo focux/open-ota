@@ -3,6 +3,7 @@ import {
   AndroidIcon,
   AppleIcon,
   Copy01Icon,
+  GitCommitIcon,
   InformationCircleIcon,
 } from "@hugeicons/core-free-icons"
 
@@ -128,18 +129,39 @@ export function RuntimeVersion({ value }: { readonly value: string }) {
   )
 }
 
-/** A git sha as an inline code chip. */
+/** A git sha as an inline code chip. The icon is what says it is not an id. */
 export function CommitBadge({ value }: { readonly value: string }) {
   return (
-    <span className="rounded-md bg-foreground/[0.04] px-1.5 py-0.5 font-mono text-xs shadow-hairline">
-      {value.slice(0, 7)}
-    </span>
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <span className="inline-flex cursor-default items-center gap-1 rounded-md bg-foreground/[0.04] px-1.5 py-0.5 font-mono text-xs shadow-hairline" />
+        }
+      >
+        <HugeiconsIcon
+          icon={GitCommitIcon}
+          strokeWidth={2}
+          className="size-3 text-muted-foreground"
+        />
+        {value.slice(0, 7)}
+      </TooltipTrigger>
+      <TooltipContent>
+        Commit
+        <span className="font-mono">{value}</span>
+      </TooltipContent>
+    </Tooltip>
   )
 }
 
 /** The short id, with the full one a click away on the clipboard. */
-export function CopyId({ value }: { readonly value: string }) {
-  return <CopyButton value={value} label={shortId(value)} />
+export function CopyId({
+  value,
+  kind,
+}: {
+  readonly value: string
+  readonly kind: string
+}) {
+  return <CopyButton value={value} label={shortId(value)} hint={kind} />
 }
 
 /** A hash is unreadable in full; the ends are enough to tell two apart. */
@@ -152,9 +174,12 @@ export function maskHash(value: string): string {
 export function CopyButton({
   value,
   label,
+  hint,
 }: {
   readonly value: string
   readonly label: string
+  // What kind of value this is. Hashes read as hashes; ids need the word.
+  readonly hint?: string
 }) {
   return (
     <Tooltip>
@@ -179,7 +204,10 @@ export function CopyButton({
         {label}
         <HugeiconsIcon icon={Copy01Icon} strokeWidth={2} />
       </TooltipTrigger>
-      <TooltipContent className="font-mono text-xs">{value}</TooltipContent>
+      <TooltipContent>
+        {hint}
+        <span className="font-mono">{value}</span>
+      </TooltipContent>
     </Tooltip>
   )
 }
