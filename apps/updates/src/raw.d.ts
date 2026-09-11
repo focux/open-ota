@@ -9,3 +9,9 @@ declare module "*.wasm" {
   const module: WebAssembly.Module;
   export default module;
 }
+
+// workerd's own cache instance. This project loads the DOM lib as well, whose
+// CacheStorage does not declare it.
+interface CacheStorage {
+  readonly default: Cache;
+}
