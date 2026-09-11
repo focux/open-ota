@@ -41,6 +41,22 @@ const BranchRollbackInput = Schema.Struct({
   message: Schema.optionalKey(Schema.String),
 });
 const RolloutInput = Schema.Struct({ percent: Percent });
+const ClientId = Schema.Struct({ clientId: Schema.String.check(Schema.isNonEmpty()) });
+const NonEmpty = Schema.String.check(Schema.isNonEmpty());
+// Support looks a device up by whatever the user could tell them. Every filter
+// is optional and they narrow together.
+const DeviceSearch = Schema.Struct({
+  platform: Schema.optional(Platform),
+  runtimeVersion: Schema.optional(NonEmpty),
+  channel: Schema.optional(NonEmpty),
+  currentUpdateId: Schema.optional(NonEmpty),
+  country: Schema.optional(NonEmpty),
+  // A day at most: beyond that "recently" stops narrowing anything.
+  seenWithinMinutes: Schema.optional(
+    Schema.NumberFromString.check(Schema.isInt(), Schema.isBetween({ minimum: 1, maximum: 1440 })),
+  ),
+  limit: Schema.optional(Schema.NumberFromString.check(Schema.isInt(), Schema.isBetween({ minimum: 1, maximum: 200 }))),
+});
 const RollbackInput = Schema.Struct({
   runtimeVersion: Schema.String.check(Schema.isNonEmpty()),
   platforms: Schema.Array(Platform).check(Schema.isNonEmpty()),
@@ -92,6 +108,46 @@ export const adminRoutes = HttpRouter.use(
       "GET",
       "/admin/metrics",
       handle(authorized(store.metricsOverview().pipe(Effect.map((overview) => json(overview)), Effect.withSpan("Admin.metrics")))),
+    );
+
+    // Why one device is where it is: its last known state, then the checks
+    // that put it there, newest first.
+    yield* router.add(
+      "GET",
+      "/admin/devices/:clientId",
+      handle(
+        authorized(
+          Effect.fn("Admin.device")(function* () {
+            const { clientId } = yield* HttpRouter.schemaPathParams(ClientId).pipe(badRequestOn("Invalid client id."));
+            const device = yield* store.deviceById(clientId);
+            if (device === null) return yield* Effect.fail(new NotFound({ message: "Unknown device." }));
+            return json({ device, checks: yield* store.recentChecks(clientId) });
+          })(),
+        ),
+      ),
+    );
+
+    // For when support cannot get a client id out of the user.
+    yield* router.add(
+      "GET",
+      "/admin/devices",
+      handle(
+        authorized(
+          Effect.fn("Admin.devices")(function* () {
+            const query = yield* HttpRouter.schemaParams(DeviceSearch).pipe(badRequestOn("Invalid device filters."));
+            const devices = yield* store.findDevices({
+              platform: query.platform,
+              runtimeVersion: query.runtimeVersion,
+              channel: query.channel,
+              currentUpdateId: query.currentUpdateId,
+              country: query.country,
+              seenWithinMinutes: query.seenWithinMinutes,
+              limit: query.limit ?? 50,
+            });
+            return json({ devices });
+          })(),
+        ),
+      ),
     );
 
     // Every update goes out with its figures, so no page has to derive them.
