@@ -4,6 +4,7 @@ import { HugeiconsIcon } from "@hugeicons/react"
 import {
   DashboardSquare01Icon,
   GitBranchIcon,
+  SmartphoneIcon,
 } from "@hugeicons/core-free-icons"
 
 import { NavMain } from "@/components/nav-main"
@@ -50,6 +51,11 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
                 title: "Branches",
                 icon: <HugeiconsIcon icon={GitBranchIcon} strokeWidth={2} />,
                 to: "/branches",
+              },
+              {
+                title: "Devices",
+                icon: <HugeiconsIcon icon={SmartphoneIcon} strokeWidth={2} />,
+                to: "/devices",
               },
             ]}
           />

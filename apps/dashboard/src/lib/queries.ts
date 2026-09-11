@@ -1,7 +1,8 @@
 import { useSyncExternalStore } from "react"
 import { infiniteQueryOptions, queryOptions } from "@tanstack/react-query"
 
-import { api } from "@/lib/api"
+import { api, deviceQuery } from "@/lib/api"
+import type { DeviceFilters } from "@/lib/api"
 
 /** Every query key in one place, so invalidation cannot drift from the reads. */
 export const queryKeys = {
@@ -12,6 +13,11 @@ export const queryKeys = {
   rollbackPlan: (branch: string) => ["rollback-plan", branch] as const,
   group: (id: string) => ["group", id] as const,
   updatePatches: (updateId: string) => ["update-patches", updateId] as const,
+  // Keyed on the query the server is asked, so two spellings of the same
+  // search share one entry.
+  devices: (filters: DeviceFilters) =>
+    ["devices", deviceQuery(filters)] as const,
+  device: (clientId: string) => ["device", clientId] as const,
 }
 
 const groupsPageSize = 50
@@ -30,6 +36,20 @@ export const groupQueryOptions = (id: string) =>
   queryOptions({
     queryKey: queryKeys.group(id),
     queryFn: () => api.group(id),
+  })
+
+/** Devices matching a support search, most recently seen first. */
+export const devicesQueryOptions = (filters: DeviceFilters) =>
+  queryOptions({
+    queryKey: queryKeys.devices(filters),
+    queryFn: () => api.devices(filters),
+  })
+
+/** One device, with the last answers the server gave it. */
+export const deviceQueryOptions = (clientId: string) =>
+  queryOptions({
+    queryKey: queryKeys.device(clientId),
+    queryFn: () => api.device(clientId),
   })
 
 /** The delta patches toward one update's bundle, and how it has been delivered. */

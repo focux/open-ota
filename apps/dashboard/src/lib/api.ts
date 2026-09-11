@@ -216,7 +216,73 @@ const UpdatePatches = Schema.Struct({
   delivery: Schema.NullOr(AssetDelivery),
 })
 
+// One device as the registry last saw it. Nulls are "not reported", never
+// "none": a device on its build's embedded JS names that bundle's own id.
+const Device = Schema.Struct({
+  clientId: Schema.String,
+  platform: Platform,
+  runtimeVersion: Schema.String,
+  channel: Schema.String,
+  currentUpdateId: Schema.NullOr(Schema.String),
+  embeddedUpdateId: Schema.NullOr(Schema.String),
+  servedUpdateId: Schema.NullOr(Schema.String),
+  country: Schema.NullOr(Schema.String),
+  city: Schema.NullOr(Schema.String),
+  firstSeenAt: Schema.String,
+  lastSeenAt: Schema.String,
+})
+
+// Why the server answered a check the way it did. Mirrors DecisionReason in
+// apps/updates/src/protocol.ts; the words for each are in lib/devices.ts.
+const DecisionReason = Schema.Literals([
+  "manifest",
+  "rollback",
+  "unknown-channel",
+  "no-update-for-runtime",
+  "rollout-excluded",
+  "already-current",
+  "already-embedded",
+])
+
+// One answer a device got. A run of identical answers arrives as one entry
+// with `checks` above 1, spanning first to last.
+const DeviceCheck = Schema.Struct({
+  firstCheckedAt: Schema.String,
+  lastCheckedAt: Schema.String,
+  checks: Schema.Number,
+  platform: Platform,
+  runtimeVersion: Schema.String,
+  channel: Schema.String,
+  currentUpdateId: Schema.NullOr(Schema.String),
+  embeddedUpdateId: Schema.NullOr(Schema.String),
+  decision: Schema.Literals(["manifest", "rollback", "none"]),
+  reason: DecisionReason,
+  servedUpdateId: Schema.NullOr(Schema.String),
+  fatalError: Schema.NullOr(Schema.String),
+})
+
+const DeviceDetail = Schema.Struct({
+  device: Device,
+  checks: Schema.Array(DeviceCheck),
+})
+
+const DevicesPage = Schema.Struct({ devices: Schema.Array(Device) })
+
+/** What support can be told, and search on. Every field narrows the list. */
+export interface DeviceFilters {
+  readonly platform?: Platform
+  readonly runtimeVersion?: string
+  readonly channel?: string
+  readonly currentUpdateId?: string
+  readonly country?: string
+  readonly seenWithinMinutes?: number
+}
+
 export type Platform = typeof Platform.Type
+export type Device = typeof Device.Type
+export type DeviceCheck = typeof DeviceCheck.Type
+export type DecisionReason = typeof DecisionReason.Type
+export type DeviceDetail = typeof DeviceDetail.Type
 export type StoredAsset = typeof StoredAsset.Type
 export type BundleUpdate = typeof BundleUpdate.Type
 export type Update = typeof Update.Type
@@ -272,6 +338,20 @@ export const api = {
       "GET",
       undefined,
       Group
+    ),
+  devices: (filters: DeviceFilters) =>
+    runRequest(
+      `/api/admin/devices?${deviceQuery(filters)}`,
+      "GET",
+      undefined,
+      DevicesPage
+    ),
+  device: (clientId: string) =>
+    runRequest(
+      `/api/admin/devices/${encodeURIComponent(clientId)}`,
+      "GET",
+      undefined,
+      DeviceDetail
     ),
   updatePatches: (updateId: string) =>
     runRequest(
@@ -332,6 +412,16 @@ export const api = {
       { percent },
       RolloutResult
     ),
+}
+
+/** Only the filters the user actually filled in reach the server. */
+export function deviceQuery(filters: DeviceFilters): string {
+  const params = new URLSearchParams()
+  for (const [name, value] of Object.entries(filters)) {
+    const text = typeof value === "number" ? String(value) : value?.trim()
+    if (text !== undefined && text !== "") params.set(name, text)
+  }
+  return params.toString()
 }
 
 function runRequest<TResult>(

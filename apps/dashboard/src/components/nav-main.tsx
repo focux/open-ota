@@ -11,7 +11,7 @@ export function NavMain({
   readonly items: ReadonlyArray<{
     readonly title: string
     readonly icon: React.ReactNode
-    readonly to: "/" | "/branches"
+    readonly to: "/" | "/branches" | "/devices"
     readonly exact?: boolean
   }>
 }) {
