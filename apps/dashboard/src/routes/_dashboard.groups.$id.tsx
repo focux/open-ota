@@ -113,14 +113,17 @@ function GroupPage() {
           </span>
         }
         actions={
-          <GroupActions
-            group={group.data}
-            branches={overview.data?.branches ?? [group.data.branch]}
-            channels={overview.data?.channels ?? []}
-            metrics={metrics.data}
-            current={current}
-            layout="buttons"
-          />
+          <>
+            <CopyId value={group.data.id} kind="Update group" />
+            <GroupActions
+              group={group.data}
+              branches={overview.data?.branches ?? [group.data.branch]}
+              channels={overview.data?.channels ?? []}
+              metrics={metrics.data}
+              current={current}
+              layout="buttons"
+            />
+          </>
         }
       />
 
@@ -307,7 +310,7 @@ function UpdateCard({
             Runtime version <RuntimeVersion value={update.runtimeVersion} />
           </span>
         }
-        action={<CopyId value={update.id} />}
+        action={<CopyId value={update.id} kind="Update" />}
       />
       <FramePanel>
         <div className="flex flex-col gap-4 p-4">
@@ -513,10 +516,7 @@ function DeltaPatches({ updateId }: { readonly updateId: string }) {
                               key={base.updateId}
                               className="flex items-center gap-1"
                             >
-                              <CopyButton
-                                value={base.updateId}
-                                label={shortId(base.updateId)}
-                              />
+                              <CopyId value={base.updateId} kind="Update" />
                               {base.embedded && (
                                 <Badge variant="secondary">Build</Badge>
                               )}
