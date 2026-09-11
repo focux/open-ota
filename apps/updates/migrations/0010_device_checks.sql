@@ -1,12 +1,7 @@
--- The last checks a device made, so support can answer "why is this device not
--- getting the update" from what the server actually decided. A bounded ring
--- per client, pruned on write: this is a diagnostic tail, not a request log.
---
--- A device polls on a timer, so a run of identical answers is one entry with a
--- count rather than twenty rows saying the same thing. That keeps the ring
--- covering the transitions that explain the device instead of the last few
--- minutes of it repeating itself, and costs one statement per poll in the
--- steady state.
+-- The last answers a device got, so support can say why it is not getting the
+-- update. A bounded ring per client, pruned on write: a diagnostic tail, not a
+-- request log. A run of identical answers is one row with a count, so the ring
+-- holds the transitions rather than the last few minutes of polling.
 CREATE TABLE device_checks (
   client_id TEXT NOT NULL,
   first_checked_at TEXT NOT NULL,
