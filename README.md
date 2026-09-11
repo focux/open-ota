@@ -341,6 +341,26 @@ environment variables as its native build.
 | Publishing is blocked by an active rollout | Complete the existing rollout at 100% or use the dashboard's **Roll back** action for the affected build. |
 | Init cannot create its backup | Review and keep or rename `app.json.open-ota.bak` before retrying. Init never overwrites an existing backup. |
 
+### One device is not getting the update
+
+The dashboard's **Devices** page answers this from what the server actually decided, rather than from
+guesswork. Search by the `eas-client-id` the app reports, or narrow the fleet by platform, runtime
+version, channel, running update, country, or last seen. The device page shows its current state and
+its recent checks, each with the reason behind the answer. Work down these in order; the first one
+that matches is the answer.
+
+| What you see | What it means |
+| --- | --- |
+| The device is not there at all | The app is not reaching this server. Check `OTA_URL` in the build, network access to the updates hostname, and that the hostname is not behind Cloudflare Access. |
+| **Unknown channel** | The build asks for a channel no branch is linked to. Link that channel to a branch, or ship a binary built for a channel that exists. |
+| **No update for runtime** | Nothing published on the branch targets the runtime version in the native binary. Publish for that runtime, or ship a new binary. |
+| **Rollout excluded** | Expected. The newest update is on a partial rollout and this device is outside it. Raise the rollout percentage to include it. |
+| **Already current** | Nothing is wrong: the device runs the newest update the branch serves. |
+| Served is ahead of running | The update was downloaded and is waiting for a full relaunch. `expo-updates` does not apply one on a return from the background. |
+
+Checks are kept per device as a short bounded history, and a run of identical answers is one entry
+with a count, so the list shows the transitions rather than the last few minutes of polling.
+
 ## License
 
 [MIT](LICENSE).
