@@ -1105,11 +1105,13 @@ function makeSqlStore() {
         SELECT country, COUNT(*) AS devices FROM devices WHERE country IS NOT NULL
         GROUP BY country ORDER BY devices DESC, country LIMIT 100
       `.pipe(Effect.mapError(fail), storedRows(Schema.Struct({ country: Schema.String, devices: Schema.Int })));
+      // The inner grouping follows the covering index; the outer sum
+      // combines channels into each update's country count.
       const segments = yield* sql`
         SELECT update_id, country, SUM(running) AS running, SUM(faulty) AS faulty FROM (
           SELECT current_update_id AS update_id, country, COUNT(*) AS running, 0 AS faulty
           FROM devices WHERE current_update_id IS NOT NULL AND country IS NOT NULL
-          GROUP BY current_update_id, country
+          GROUP BY current_update_id, channel, country
           UNION ALL
           SELECT f.update_id, d.country, 0 AS running, COUNT(*) AS faulty
           FROM device_update_failures f JOIN devices d ON d.client_id = f.client_id
