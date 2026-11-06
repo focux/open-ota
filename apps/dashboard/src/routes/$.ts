@@ -1,4 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router"
+import type {} from "@tanstack/react-start"
 
 interface DashboardEnv {
   readonly UPDATES?: { readonly fetch: typeof fetch }

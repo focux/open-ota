@@ -149,6 +149,19 @@ describe.each(stores)("store contract over %s", (_, layer) => {
       }),
     ));
 
+  it("sums country segments across channels", () =>
+    run(
+      Effect.gen(function* () {
+        const store = yield* seed;
+        const group = yield* store.publishGroup({ branch: "staging", updates: { ios: bundle() } });
+        const updateId = group.updates[0]!.id;
+        for (const channel of ["staging", "beta"]) {
+          yield* store.recordCheck(check({ clientId: channel, channel, country: "CA", currentUpdateId: updateId }));
+        }
+        expect((yield* store.metricsOverview()).segments).toEqual([{ updateId, country: "CA", running: 2, faulty: 0 }]);
+      }),
+    ));
+
   it("includes countries where every device failed to launch an update", () =>
     run(
       Effect.gen(function* () {
