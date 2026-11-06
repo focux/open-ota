@@ -1,5 +1,6 @@
 import { Effect } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
+import { isSqlError } from "effect/unstable/sql/SqlError";
 import { BadRequest, Unauthorized, httpStatus, type UpdatesError } from "./errors.ts";
 
 // Every route ends here: typed failures become JSON with the matching status.
@@ -10,7 +11,11 @@ export const handle = <R>(effect: Effect.Effect<HttpServerResponse.HttpServerRes
       const response = HttpServerResponse.jsonUnsafe({ error: error.message }, { status });
       // A 500 tells the caller nothing; the driver error behind it only exists
       // in the logs, so make sure it gets there.
-      return status < 500 ? Effect.succeed(response) : Effect.as(Effect.logError(error.message, error.cause), response);
+      const cause = isSqlError(error.cause) ? error.cause.reason.cause : error.cause;
+      return status < 500 ? Effect.succeed(response) : Effect.as(
+        Effect.logError(error.message, cause instanceof Error ? cause.message : cause, error.cause),
+        response,
+      );
     }),
   );
 
